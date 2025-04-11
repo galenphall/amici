@@ -1,0 +1,10 @@
+pandas
+numpy
+requests
+bs4
+pyPDF2
+ocrmypdf
+google-cloud-storage
+openai
+sqlite3
+jupyter
