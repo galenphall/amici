@@ -1,13 +1,11 @@
 from datetime import datetime
-import itemadapter
+import logging
 import scrapy
 from itemloaders import ItemLoader
-from webscraper.items import RawDocument
+from ..items import RawDocument
 import mimetypes
-import os
 import re
 import urllib.parse
-from dotenv import load_dotenv
 
 class SupremeCourtSpider(scrapy.Spider):
     """
@@ -18,129 +16,132 @@ class SupremeCourtSpider(scrapy.Spider):
     """
     name = "supremecourt"
     
+    # Configuration parameters as class attributes
+    start_year = 18
+    end_year = 25
+    min_docket = 1
+    max_docket = 20000
+    
     def start_requests(self):
         """
-        Generates initial requests to scrape Supreme Court dockets from years 18-24.
+        Generates initial requests to scrape Supreme Court dockets from configured years.
         """
-        print('Scraping Supreme Court dockets')
+        self.logger.info('Scraping Supreme Court dockets')
         
-        # Uncomment to scrape all dockets from 2018 to 2024
-        for year in range(18, 25):
-            for docketid in range(1, 20000):
+        # Directly iterate through all docket pages
+        for year in range(self.start_year, self.end_year):
+            for docket_id in range(self.min_docket, self.max_docket):
+                url = f"https://www.supremecourt.gov/search.aspx?filename=/docket/docketfiles/html/public/{year}-{docket_id}.html"
                 yield scrapy.Request(
-                    f"https://www.supremecourt.gov/search.aspx?filename=/docket/docketfiles/html/public/{year}-{docketid}.html",
+                    url=url,
                     callback=self.parse,
-                    cb_kwargs={"doctype": "supreme_docket", "storedoc": True}
+                    cb_kwargs={"doctype": "supreme_docket"},
+                    errback=self.handle_error
                 )
+    
+    def handle_error(self, failure):
+        """
+        Handle request errors to prevent spider crashes.
+        
+        Args:
+            failure: The failure object containing error information
+        """
+        self.logger.error(f"Request failed: {failure.request.url}")
+        self.logger.error(f"Error: {repr(failure.value)}")
     
     def parse(self, response, **kwargs):
         """
         Main parse method that handles all response types based on doctype.
+        
+        Args:
+            response: The HTTP response object
+            **kwargs: Additional keyword arguments
+        
+        Returns:
+            Generator yielding items or requests
         """
-        print(response.url)
+        self.logger.debug(f"Processing: {response.url}")
         
         doctype = kwargs['doctype']
-        storedoc = kwargs.get('storedoc', True)
         
-        if storedoc:
+        try:
             # Extract and store the document
-            meta_extract_dict = self._build_meta_dict(response, doctype)
-            
-            # Handle POST request URLs
-            if 'formdata' in response.meta:
-                meta_extract_dict['url'] = (
-                    "value",
-                    response.url + '&' + '&'.join([
-                        f'{k}={v}' for k, v in response.meta['formdata'].items()
-                        if (0 < len(str(v)) < 50) and (f'{k}={v}' not in response.url)
-                    ]))
-            
-            # Create item loader and populate with metadata
-            loader = ItemLoader(item=RawDocument(), response=response, selector=response)
-            for key, (valtype, val) in meta_extract_dict.items():
-                if valtype == 'xpath':
-                    loader.add_xpath(key, val)
-                elif valtype == 'css':
-                    loader.add_css(key, val)
-                elif valtype == 'value':
-                    loader.add_value(key, val)
-                elif valtype == 'func':
-                    loader.add_value(key, val(response))
-            
+            loader = self._create_item_loader(response, doctype)
             yield loader.load_item()
-        
-        # Generate new requests based on doctype
-        yield from self._process_by_doctype(response, doctype)
+            
+            # Process document links for amicus briefs if this is a docket page
+            if doctype == "supreme_docket":
+                yield from self._process_docket_page(response)
+        except Exception as e:
+            self.logger.error(f"Error processing {response.url}: {str(e)}")
     
-    def _build_meta_dict(self, response, doctype):
+    def _create_item_loader(self, response, doctype):
         """
-        Build metadata dictionary for the response.
+        Create and populate an item loader for the response.
+        
+        Args:
+            response: The HTTP response object
+            doctype: The type of document being processed
+            
+        Returns:
+            A populated ItemLoader object
         """
-        return {
-            'url': ('value', response.url),
-            'state': ('value', 'SupremeCourt'),
-            'rawcontent': ('func', lambda r: r.body),
-            'doctype': ('value', doctype),
-            'accessed': ('value', datetime.now()),
-            'filetype': ('func', lambda r: mimetypes.guess_extension(
-                str(r.headers[b'Content-Type'].decode()).split(';')[0], strict=False
-            )),
-            'metadata': ('value', {})
-        }
+        loader = ItemLoader(item=RawDocument(), response=response, selector=response)
+        
+        # Add standard metadata fields
+        loader.add_value('url', response.url)
+        loader.add_value('doctype', doctype)
+        loader.add_value('accessed', datetime.now())
+        loader.add_value('rawcontent', response.body)
+        
+        # Get content type
+        try:
+            content_type = str(response.headers[b'Content-Type'].decode()).split(';')[0]
+            file_ext = mimetypes.guess_extension(content_type, strict=False)
+            loader.add_value('filetype', file_ext)
+        except Exception as e:
+            self.logger.warning(f"Could not determine filetype: {str(e)}")
+            loader.add_value('filetype', None)
+        
+        # Add empty metadata dictionary
+        loader.add_value('metadata', {})
+        
+        return loader
     
-    def _process_by_doctype(self, response, doctype):
+    def _process_docket_page(self, response):
         """
-        Process the response based on doctype and generate new requests.
+        Process a Supreme Court docket page looking for amicus briefs.
+        
+        Args:
+            response: The HTTP response object
+            
+        Returns:
+            Generator yielding requests for document pages
         """
-        if doctype == "supreme_home":
-            viewstate = response.xpath('//input[@id = "__VIEWSTATE"]/@value').get()
-            viewstategenerator = response.xpath('//input[@id = "__VIEWSTATEGENERATOR"]/@value').get()
-
-            formdata = {
-                "ctl00_ctl00_RadScriptManager1_TSM": "",
-                "__EVENTTARGET": "",
-                "__EVENTARGUMENT": "",
-                "__VIEWSTATE": viewstate,
-                "__VIEWSTATEGENERATOR": viewstategenerator,
-                "ctl00$ctl00$txtSearch": "",
-                "ctl00$ctl00$txbhidden": "",
-                "ct": "Supreme-Court-Dockets",
-                "ctl00$ctl00$MainEditable$mainContent$cmdSearch": "Search"
-            }
-
-            for year in range(18, 25):
-                for docketnum in range(1, 20000):
-                    formdata["ctl00$ctl00$MainEditable$mainContent$txtQuery"] = f"{year}-{docketnum}"
-                    yield scrapy.FormRequest(
-                        "https://www.supremecourt.gov/docket/docket.aspx",
-                        formdata=formdata,
-                        callback=self.parse,
-                        cb_kwargs={"doctype": "supreme_docket_search", "storedoc": True}
-                    )
+        # Check if page might contain amicus briefs (efficient check before parsing links)
+        has_amicus = False
+        try:
+            # More efficient search - look in text content rather than full body HTML
+            text_content = ' '.join(response.xpath('//text()').getall())
+            has_amicus = re.search(r"amicus|amici", text_content, re.IGNORECASE) is not None
+        except Exception as e:
+            self.logger.warning(f"Error checking for amicus content: {str(e)}")
+            # Fallback to assume it might have amicus content
+            has_amicus = True
         
-        elif doctype == "supreme_docket_search":
-            # Find links to docket files
-            links = response.xpath('//a[contains(@href, "docketfiles")]/@href').getall()
-            for link in links:
-                yield scrapy.Request(
-                    url=urllib.parse.urljoin(response.url, link),
-                    callback=self.parse,
-                    cb_kwargs={"doctype": "supreme_docket", "storedoc": True}
-                )
-        
-        elif doctype == "supreme_docket":
-            # Look for pages with amicus briefs and collect document links
-            page_text = response.xpath('//body').get()
-            if re.search(r"amicus|amici", page_text, re.IGNORECASE):
+        if has_amicus:
+            # Find document links for potential amicus briefs
+            try:
                 document_links = response.xpath('//a[contains(@class, "documentanchor")]')
                 
                 for link in document_links:
                     url = link.xpath('@href').get()
-                    yield scrapy.Request(
-                        url=url,
-                        callback=self.parse,
-                        cb_kwargs={
-                            "doctype": "supreme_document",
-                            "storedoc": True,
-                        }
-                    )
+                    if url:
+                        yield scrapy.Request(
+                            url=urllib.parse.urljoin(response.url, url),
+                            callback=self.parse,
+                            cb_kwargs={"doctype": "supreme_document"},
+                            errback=self.handle_error
+                        )
+            except Exception as e:
+                self.logger.error(f"Error processing document links: {str(e)}")
