@@ -66,7 +66,10 @@ class SupremeCourtSpider(scrapy.Spider):
         
         try:
             # Extract and store the document
-            loader = self._create_item_loader(response, doctype, **kwargs)
+            # Remove doctype from kwargs as it's passed explicitly
+            kwargs_for_loader = kwargs.copy()
+            kwargs_for_loader.pop('doctype', None) 
+            loader = self._create_item_loader(response, doctype, **kwargs_for_loader)
             yield loader.load_item()
             
             # Process document links for amicus briefs if this is a docket page
@@ -133,23 +136,18 @@ class SupremeCourtSpider(scrapy.Spider):
         Returns:
             Generator yielding requests for document pages
         """
-        # Get the case title from the docket page
+        # Get the case title from the docket info table
         case_title = None
         try:
-            case_title = response.xpath('//caption[@class="captiontext"]/text()').get()
-            if case_title:
+            # Find the td containing "Title:", get the next td, then the span with class="title"
+            # Get all text nodes within that span and join them
+            title_parts = response.xpath('//table[@id="docketinfo"]//td[contains(span/text(), "Title:")]/following-sibling::td/span[@class="title"]//text()').getall()
+            if title_parts:
+                # Join parts (handling potential <br> tags) and strip whitespace
+                case_title = ' '.join(part.strip() for part in title_parts if part.strip())
                 case_title = case_title.strip()
         except Exception as e:
             self.logger.warning(f"Error extracting case title: {str(e)}")
-        
-        # Extract the docket date if available
-        docket_date = None
-        try:
-            date_text = response.xpath('//th[contains(text(), "Date")]/following-sibling::td/text()').get()
-            if date_text:
-                docket_date = date_text.strip()
-        except Exception as e:
-            self.logger.warning(f"Error extracting docket date: {str(e)}")
             
         # Check if page might contain amicus briefs (efficient check before parsing links)
         has_amicus = False

@@ -14,8 +14,14 @@ from google.cloud import storage
 from google.api_core.exceptions import Forbidden as GoogleForbiddenException
 from dotenv import load_dotenv
 
-from ...transformation.text_extraction import process_pdf_for_text
-from ...transformation.ocr import check_has_embedded_text, extract_text_from_pdf, run_ocr_on_pdf
+import sys
+import os
+from pathlib import Path
+
+# Add the project root to the path for imports
+sys.path.append(str(Path(__file__).parent.parent.parent.parent))
+from amici.transformation.text_extraction import process_pdf_for_text
+from amici.transformation.ocr import check_has_embedded_text, extract_text_from_pdf, run_ocr_on_pdf
 
 logger = logging.getLogger(__name__)
 
@@ -29,20 +35,22 @@ class GCSPipeline:
         # GCS boilerplate code
         # Requires the GOOGLE_APPLICATION_CREDENTIALS environment variable
 
-        load_dotenv("../../.env")
+        load_dotenv("../../../.env")
         if not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
             raise ValueError(
                 "Google auth credentials not set. Make sure to include in the .env file in /env directory.")
 
         storage_client: storage.Client = storage.Client()
-        self.bucket = storage_client.bucket("interest_groups_raw_documents_2025")
         
-        # Get text bucket from environment variable
-        text_bucket_name = os.getenv("TEXT_BUCKET", "interest_groups_text_documents")
-        self.text_bucket = storage_client.bucket(text_bucket_name)
-        
-        logger.info(f"Using document bucket: {self.bucket.name}")
-        logger.info(f"Using text bucket: {self.text_bucket.name}")
+        # Initialize and check raw documents bucket
+        raw_bucket_name = os.getenv("RAW_BUCKET", "N/A")
+        if raw_bucket_name == "N/A":
+            raise ValueError("RAW_BUCKET environment variable is not set.")
+        self.bucket = storage_client.bucket(raw_bucket_name)
+
+        self.bucket_folder = os.getenv("BUCKET_FOLDER", "N/A")
+        self.text_bucket_folder = os.getenv("TEXT_BUCKET_FOLDER", "N/A")
+
 
     def process_item(self, item: itemadapter.ItemAdapter.item, spider: scrapy.Spider) -> itemadapter.ItemAdapter.item:
         """
@@ -51,9 +59,6 @@ class GCSPipeline:
         """
         # Transform the item into a dictionary
         adapted = ItemAdapter(item)
-        
-        # Get state value or default to 'SUPREMECOURT'
-        state = adapted.get('state')[0] if adapted.get('state') else 'SUPREMECOURT'
 
         if adapted.get('rawcontent'):
             # Get the file extension
@@ -79,10 +84,10 @@ class GCSPipeline:
             # Naming scheme: <state>/<domain>/<sub-pages>/<file><.extension>
             # If the file already has an extension, keep it.
             if re.search("\.[a-z]+$", parsed_url):
-                new_file_name = f'{state}/{parsed_url}'
+                new_file_name = f'{self.bucket_folder}/{parsed_url}'
             # Otherwise, add the inferred extension
             else:
-                new_file_name = f'{state}/{parsed_url}{filetype}'
+                new_file_name = f'{self.bucket_folder}/{parsed_url}{filetype}'
 
             blob = self.bucket.blob(new_file_name)
 
@@ -123,12 +128,15 @@ class GCSPipeline:
                 pdf_content = raw_content if isinstance(raw_content, bytes) else raw_content.encode('utf-8')
                 text_content, needed_ocr = process_pdf_for_text(pdf_content, text_metadata)
                 
-                # Create a filename for the text file that mirrors the PDF name
-                parsed_path = pathlib.Path(new_file_name)
-                text_file_name = str(parsed_path.with_suffix('.txt'))
+                if re.search("\.[a-z]+$", parsed_url):
+                    new_file_name = f'{self.text_bucket_folder}/{parsed_url}'
+                # Otherwise, add the inferred extension
+                else:
+                    new_file_name = f'{self.text_bucket_folder}/{parsed_url}{filetype}'
+                text_file_name = 'text/' + str(parsed_path.with_suffix('.txt'))
                 
                 # Upload text to text bucket
-                text_blob = self.text_bucket.blob(text_file_name)
+                text_blob = self.bucket.blob(text_file_name)
                 
                 # Add metadata about the text extraction
                 text_blob.metadata = {
@@ -138,6 +146,8 @@ class GCSPipeline:
                     "docket_page": text_metadata.get("docket_page", ""),
                     "date": text_metadata.get("date", "")
                 }
+
+                logger.info(f"Uploading text for amicus brief to {text_file_name}")
                 
                 # Upload the text content
                 text_file = io.BytesIO(text_content.encode('utf-8'))

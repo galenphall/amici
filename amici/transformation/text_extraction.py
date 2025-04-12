@@ -1,7 +1,12 @@
 import os
 import fitz  # PyMuPDF
 import logging
-from ..transformation.ocr import check_has_embedded_text, extract_text_from_pdf, run_ocr_on_pdf
+import sys
+from pathlib import Path
+
+# Add the project root to the path for imports
+sys.path.append(str(Path(__file__).parent.parent.parent))
+from amici.transformation.ocr import check_has_embedded_text, extract_text_from_pdf, run_ocr_on_pdf
 
 logger = logging.getLogger(__name__)
 
