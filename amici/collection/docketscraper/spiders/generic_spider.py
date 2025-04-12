@@ -66,7 +66,7 @@ class SupremeCourtSpider(scrapy.Spider):
         
         try:
             # Extract and store the document
-            loader = self._create_item_loader(response, doctype)
+            loader = self._create_item_loader(response, doctype, **kwargs)
             yield loader.load_item()
             
             # Process document links for amicus briefs if this is a docket page
@@ -75,13 +75,14 @@ class SupremeCourtSpider(scrapy.Spider):
         except Exception as e:
             self.logger.error(f"Error processing {response.url}: {str(e)}")
     
-    def _create_item_loader(self, response, doctype):
+    def _create_item_loader(self, response, doctype, **kwargs):
         """
         Create and populate an item loader for the response.
         
         Args:
             response: The HTTP response object
             doctype: The type of document being processed
+            **kwargs: Additional keyword arguments containing metadata
             
         Returns:
             A populated ItemLoader object
@@ -104,7 +105,21 @@ class SupremeCourtSpider(scrapy.Spider):
             loader.add_value('filetype', None)
         
         # Add empty metadata dictionary
-        loader.add_value('metadata', {})
+        metadata = {}
+        loader.add_value('metadata', metadata)
+        
+        # Add additional fields from kwargs
+        if 'is_amicus_brief' in kwargs:
+            loader.add_value('is_amicus_brief', kwargs['is_amicus_brief'])
+            
+        if 'case_title' in kwargs:
+            loader.add_value('case_title', kwargs['case_title'])
+            
+        if 'docket_page' in kwargs:
+            loader.add_value('docket_page', kwargs['docket_page'])
+            
+        if 'date' in kwargs:
+            loader.add_value('date', kwargs['date'])
         
         return loader
     
@@ -118,6 +133,24 @@ class SupremeCourtSpider(scrapy.Spider):
         Returns:
             Generator yielding requests for document pages
         """
+        # Get the case title from the docket page
+        case_title = None
+        try:
+            case_title = response.xpath('//caption[@class="captiontext"]/text()').get()
+            if case_title:
+                case_title = case_title.strip()
+        except Exception as e:
+            self.logger.warning(f"Error extracting case title: {str(e)}")
+        
+        # Extract the docket date if available
+        docket_date = None
+        try:
+            date_text = response.xpath('//th[contains(text(), "Date")]/following-sibling::td/text()').get()
+            if date_text:
+                docket_date = date_text.strip()
+        except Exception as e:
+            self.logger.warning(f"Error extracting docket date: {str(e)}")
+            
         # Check if page might contain amicus briefs (efficient check before parsing links)
         has_amicus = False
         try:
@@ -132,16 +165,49 @@ class SupremeCourtSpider(scrapy.Spider):
         if has_amicus:
             # Find document links for potential amicus briefs
             try:
-                document_links = response.xpath('//a[contains(@class, "documentanchor")]')
+                # Get the proceedings table
+                proceeding_table = response.xpath('//table[@id="proceedings"]')
+                rows = proceeding_table.xpath('.//tr')
                 
-                for link in document_links:
-                    url = link.xpath('@href').get()
-                    if url:
-                        yield scrapy.Request(
-                            url=urllib.parse.urljoin(response.url, url),
-                            callback=self.parse,
-                            cb_kwargs={"doctype": "supreme_document"},
-                            errback=self.handle_error
-                        )
+                # Process rows in pairs (label row + document row)
+                for i in range(1, len(rows), 2):  # Start at 1 to skip header
+                    if i + 1 >= len(rows):
+                        break
+                        
+                    label_row = rows[i]
+                    link_row = rows[i + 1]
+                    
+                    # Get the date and label
+                    date = label_row.xpath('./td[1]/text()').get()
+                    if date:
+                        date = date.strip()
+                        
+                    label = label_row.xpath('./td[2]/text()').get()
+                    if label:
+                        label = label.strip()
+                        
+                    # Check if this is an amicus brief
+                    is_amicus = label and re.search(r"^Brief (amicus|amici)", label, re.IGNORECASE) is not None
+                    
+                    # Get the link from the <a> element with text "Main Document"
+                    for a_tag in link_row.xpath('.//a'):
+                        if a_tag.xpath('text()').get() == "Main Document":
+                            url = a_tag.xpath('@href').get()
+                            if url and url.endswith(".pdf"):
+                                full_url = urllib.parse.urljoin(response.url, url)
+                                
+                                # Pass relevant metadata to the document request
+                                yield scrapy.Request(
+                                    url=full_url,
+                                    callback=self.parse,
+                                    cb_kwargs={
+                                        "doctype": "supreme_document",
+                                        "is_amicus_brief": is_amicus,
+                                        "case_title": case_title,
+                                        "docket_page": response.url,
+                                        "date": date
+                                    },
+                                    errback=self.handle_error
+                                )
             except Exception as e:
                 self.logger.error(f"Error processing document links: {str(e)}")
