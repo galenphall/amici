@@ -22,6 +22,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent.parent.parent))
 from amici.transformation.text_extraction import process_pdf_for_text
 from amici.transformation.ocr import check_has_embedded_text, extract_text_from_pdf, run_ocr_on_pdf
+from amici.utils.gcs import GCSFetch
 
 logger = logging.getLogger(__name__)
 
@@ -129,11 +130,12 @@ class GCSPipeline:
                 text_content, needed_ocr = process_pdf_for_text(pdf_content, text_metadata)
                 
                 if re.search("\.[a-z]+$", parsed_url):
-                    new_file_name = f'{self.text_bucket_folder}/{parsed_url}'
+                    text_file_name = f'{self.text_bucket_folder}/{parsed_url}'
                 # Otherwise, add the inferred extension
                 else:
-                    new_file_name = f'{self.text_bucket_folder}/{parsed_url}{filetype}'
-                text_file_name = 'text/' + str(parsed_path.with_suffix('.txt'))
+                    text_file_name = f'{self.text_bucket_folder}/{parsed_url}{filetype}'
+                
+                text_file_name = Path(text_file_name).with_suffix('.txt').as_posix()
                 
                 # Upload text to text bucket
                 text_blob = self.bucket.blob(text_file_name)

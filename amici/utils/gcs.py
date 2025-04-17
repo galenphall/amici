@@ -69,3 +69,21 @@ class GCSFetch:
 
         blobs = self.__client.list_blobs(self.__bucket_name, prefix=prefix)
         return blobs
+
+    def upload_to_bucket(self, filename, file, sidecar=None):
+        """
+        Uploads a file to a GCS bucket.
+        Args:
+            filename (str): The name/path of the file to upload to the bucket.
+            file (io.BytesIO): The file content to upload.
+            sidecar (dict, optional): A dictionary containing metadata to be associated with the uploaded file.
+        Returns:
+            None
+        """
+
+        blob = self.__bucket.blob(filename)
+        blob.upload_from_file(file)
+        if sidecar:
+            blob.metadata = sidecar
+            blob.patch()
+        return blob

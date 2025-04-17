@@ -5,7 +5,9 @@ BOT_NAME = 'docketscraper'
 SPIDER_MODULES = ['docketscraper.spiders']
 NEWSPIDER_MODULE = 'docketscraper.spiders'
 
-ITEM_PIPELINES = {'docketscraper.pipelines.GCSPipeline': 1}
+ITEM_PIPELINES = {
+    'docketscraper.pipelines.GCSPipeline': 100,
+}
 
 LOG_LEVEL = 'INFO'
 LOG_STDOUT = True

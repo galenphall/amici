@@ -4,6 +4,16 @@
 # https://docs.scrapy.org/en/latest/topics/spider-middleware.html
 
 from scrapy import signals
+from scrapy.http import Response, Request
+import os
+import logging
+import io
+from pathlib import Path
+import sys
+
+# Add the project root to the path for imports
+sys.path.append(str(Path(__file__).parent.parent.parent.parent))
+from amici.utils.gcs import GCSFetch
 
 # useful for handling different item types with a single interface
 from itemadapter import is_item, ItemAdapter
@@ -46,7 +56,7 @@ class DocketscraperSpiderMiddleware:
     def process_start_requests(self, start_requests, spider):
         # Called with the start requests of the spider, and works
         # similarly to the process_spider_output() method, except
-        # that it doesn’t have a response associated.
+        # that it doesn't have a response associated.
 
         # Must return only requests (not items).
         for r in start_requests:
