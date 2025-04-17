@@ -8,13 +8,14 @@ import pandas as pd
 import uuid
 import fitz  # PyMuPDF
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed  # Added as_completed
 from functools import partial
 from typing import Tuple, Dict, List, Optional, Any
 from tqdm import tqdm
 import tempfile
 import time
 import io
+import json  # Add import for JSON support
 
 # Add the project root to the path
 sys.path.append(str(Path(__file__).parent.parent.parent))
@@ -71,23 +72,55 @@ def get_text_blob_name(pdf_blob_name: str) -> str:
     return Path(pdf_blob_name).with_suffix('.txt').as_posix()
 
 
-def check_text_exists_in_gcs(fetcher: GCSFetch, pdf_blob: str) -> bool:
+def cache_all_blob_names(fetcher: GCSFetch, data_dir: Path, prefix: str = 'SUPREMECOURT/') -> List[str]:
+    """
+    Download and cache all blob names from the GCS bucket.
+    
+    Args:
+        fetcher: GCSFetch instance for accessing GCS
+        data_dir: Directory to save the cache file
+        prefix: Prefix to filter blobs (default: 'SUPREMECOURT/')
+        
+    Returns:
+        List of all blob names in the bucket
+    """
+    logger.info(f"Downloading all blob names from GCS with prefix '{prefix}'...")
+    blobs = list(map(lambda b: b.name, fetcher.list_blobs(prefix)))
+    
+    # Cache the blobs locally
+    cache_file = data_dir / "gcs_blobs_cache.json"
+    with open(cache_file, "w") as f:
+        json.dump(blobs, f)
+    
+    logger.info(f"Cached {len(blobs)} blob names to {cache_file}")
+    return blobs
+
+
+def check_text_exists_in_gcs(fetcher: GCSFetch, pdf_blob: str, all_blobs: Optional[List[str]] = None) -> bool:
     """
     Check if a text file already exists in GCS for this PDF.
     
     Args:
         fetcher: GCSFetch instance for accessing GCS
         pdf_blob: Name of the PDF blob
+        all_blobs: Optional list of all blob names to check against (for efficiency)
         
     Returns:
         True if a text file exists, False otherwise
     """
     text_blob = get_text_blob_name(pdf_blob)
-    try:
-        return fetcher.blob_exists(text_blob)
-    except Exception as e:
-        logger.error(f"Error checking if text exists for {pdf_blob}: {e}")
-        return False
+    
+    if all_blobs:
+        # Use the cached list to check if the blob exists
+        return text_blob in all_blobs
+    else:
+        try:
+            # Use list_blobs with the exact path to check if the blob exists
+            blobs = list(fetcher.list_blobs(text_blob))
+            return len(blobs) > 0
+        except Exception as e:
+            logger.error(f"Error checking if text exists for {pdf_blob}: {e}")
+            return False
 
 
 def load_or_create_tracking_file(fetcher: GCSFetch, tracking_file: str) -> pd.DataFrame:
@@ -102,7 +135,9 @@ def load_or_create_tracking_file(fetcher: GCSFetch, tracking_file: str) -> pd.Da
         DataFrame with tracking data
     """
     try:
-        if fetcher.blob_exists(tracking_file):
+        # Check if tracking file exists using list_blobs
+        blobs = list(fetcher.list_blobs(tracking_file))
+        if len(blobs) > 0:
             logger.info(f"Loading existing tracking file from GCS: {tracking_file}")
             content, _ = fetcher.get_from_bucket(tracking_file)
             return pd.read_csv(io.BytesIO(content), index_col=0)
@@ -129,8 +164,9 @@ def upload_tracking_file(fetcher: GCSFetch, df: pd.DataFrame, tracking_file: str
     try:
         # Convert DataFrame to CSV
         csv_data = df.to_csv().encode('utf-8')
-        # Upload to GCS
-        fetcher.upload_to_bucket(tracking_file, csv_data)
+        # Upload to GCS using file-like object
+        file_obj = io.BytesIO(csv_data)
+        fetcher.upload_to_bucket(tracking_file, file_obj)
         logger.info(f"Uploaded tracking file to GCS: {tracking_file}")
         return True
     except Exception as e:
@@ -269,10 +305,17 @@ def process_blob_for_text(
             
             # Upload text to GCS
             text_blob_name = get_text_blob_name(blob_name)
-            fetcher.upload_to_bucket(text_blob_name, text.encode('utf-8'), metadata={
-                "original_file": blob_name,
-                "needed_ocr": "False"
-            })
+            # Create a file-like object for the text content
+            text_file = io.BytesIO(text.encode('utf-8'))
+            # Use sidecar instead of metadata
+            fetcher.upload_to_bucket(
+                text_blob_name, 
+                text_file,
+                sidecar={
+                    "original_file": blob_name,
+                    "needed_ocr": "False"
+                }
+            )
             
             logger.info(f"Uploaded extracted text to {text_blob_name}")
             
@@ -301,19 +344,33 @@ def process_blob_for_text(
             
             # Upload text to GCS
             text_blob_name = get_text_blob_name(blob_name)
-            fetcher.upload_to_bucket(text_blob_name, text.encode('utf-8'), metadata={
-                "original_file": blob_name,
-                "needed_ocr": "True"
-            })
+            # Create a file-like object for the text content
+            text_file = io.BytesIO(text.encode('utf-8'))
+            # Use sidecar instead of metadata
+            fetcher.upload_to_bucket(
+                text_blob_name, 
+                text_file,
+                sidecar={
+                    "original_file": blob_name,
+                    "needed_ocr": "True"
+                }
+            )
             
             logger.info(f"Uploaded OCR'd text to {text_blob_name}")
             
             # Upload the OCR'd PDF back to the original blob location
-            ocr_pdf_content = ocr_pdf_path.read_bytes()
-            fetcher.upload_to_bucket(blob_name, ocr_pdf_content, metadata={
-                "ocr_applied": "True",
-                "ocr_date": time.strftime("%Y-%m-%d")
-            })
+            with open(ocr_pdf_path, 'rb') as f:
+                ocr_pdf_file = io.BytesIO(f.read())
+                
+            # Use sidecar instead of metadata
+            fetcher.upload_to_bucket(
+                blob_name, 
+                ocr_pdf_file,
+                sidecar={
+                    "ocr_applied": "True",
+                    "ocr_date": time.strftime("%Y-%m-%d")
+                }
+            )
             
             logger.info(f"Uploaded OCR'd PDF back to {blob_name}")
             
@@ -409,10 +466,14 @@ def main():
     
     logger.info(f"Found {len(amicus_blobs)} amicus briefs to process")
     
+    # Download all blob names at once for efficient checking
+    logger.info("Downloading all blob names from GCS for efficient checking...")
+    all_blobs = cache_all_blob_names(fetcher, data_dir, prefix='SUPREMECOURT/')
+    
     # Check which blobs already have text in GCS
     logger.info("Checking for existing text files in GCS...")
     for blob in tqdm(amicus_blobs, desc="Checking existing text"):
-        if check_text_exists_in_gcs(fetcher, blob):
+        if check_text_exists_in_gcs(fetcher, blob, all_blobs):
             # Update the tracking DataFrame and amicus_briefs DataFrame
             tracking_df.loc[blob, 'has_text'] = True
             amicus_briefs.loc[amicus_briefs['blob'] == blob, 'transcribed'] = True
@@ -428,7 +489,8 @@ def main():
         
         # Save the updated amicus_briefs DataFrame locally and upload to GCS
         amicus_briefs.to_csv(amicus_briefs_path, index=False)
-        fetcher.upload_to_bucket("amicus_briefs.csv", amicus_briefs.to_csv().encode('utf-8'))
+        amicus_briefs_file = io.BytesIO(amicus_briefs.to_csv().encode('utf-8'))
+        fetcher.upload_to_bucket("amicus_briefs.csv", amicus_briefs_file)
         
         # Generate a summary report
         total_pdfs = len(tracking_df)
@@ -461,7 +523,7 @@ def main():
             futures.append(executor.submit(process_fn, blob))
         
         # Process results as they complete
-        for i, future in enumerate(tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Processing PDFs")):
+        for i, future in enumerate(tqdm(as_completed(futures), total=len(futures), desc="Processing PDFs")):
             blob, has_text, needed_ocr, error = future.result()
             
             # Update the amicus_briefs DataFrame
@@ -479,7 +541,8 @@ def main():
     
     # Upload final tracking file and amicus_briefs to GCS
     upload_tracking_file(fetcher, tracking_df, tracking_file)
-    fetcher.upload_to_bucket("amicus_briefs.csv", amicus_briefs.to_csv().encode('utf-8'))
+    amicus_briefs_file = io.BytesIO(amicus_briefs.to_csv().encode('utf-8'))
+    fetcher.upload_to_bucket("amicus_briefs.csv", amicus_briefs_file)
     
     # Generate a summary report
     total_pdfs = len(tracking_df)

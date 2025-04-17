@@ -22,8 +22,9 @@ class GCSFetch:
         to be defined there. This environment variable should point to the Google Cloud service account 
         credentials file.
         """
-
-        load_dotenv("../../.env")
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        dotenv_path = os.path.normpath(os.path.join(script_dir, '..', '..', '.env'))
+        load_dotenv(dotenv_path=dotenv_path)
         if not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
             raise ValueError(
                 "Google auth credentials not set. Make sure to include in the .env file in /env directory.")

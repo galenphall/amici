@@ -15,6 +15,7 @@ import pandas as pd
 import logging
 import dotenv
 from pathlib import Path
+import io
 
 import sys
 import os
@@ -179,4 +180,6 @@ if __name__ == "__main__":
 
     ## Upload the amicus briefs to GCS
     amicus_briefs_blob = "SUPREMECOURT/amicus_briefs.csv"
-    fetcher.upload_to_bucket(amicus_briefs_blob, os.path.join(data_dir, "amicus_briefs.csv"))
+    amicus_briefs_bytes = open(os.path.join(data_dir, "amicus_briefs.csv"), "rb").read()
+    amicus_briefs_file = io.BytesIO(amicus_briefs_bytes)
+    fetcher.upload_to_bucket(amicus_briefs_blob, amicus_briefs_file)
