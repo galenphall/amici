@@ -21,23 +21,68 @@ class SupremeCourtSpider(scrapy.Spider):
     end_year = 25
     min_docket = 1
     max_docket = 20000
+
+    def __init__(self, *args, **kwargs):
+        """
+        Initialize the spider with configurable parameters.
+        
+        Args:
+            *args: Positional arguments
+            **kwargs: Keyword arguments containing configuration parameters
+        """
+        super().__init__(*args, **kwargs)
+
+        # Log configuration
+        logging.basicConfig(level=logging.INFO)
+        
+        if kwargs.get('pdfurls') is not None:
+            self.pdfurls = kwargs['pdfurls']
+            self.override_start = True
+
+            self.logger.info(f"Configured to scrape PDF URLs from: {self.pdfurls}")
+        else:
+            self.pdfurls = False
+            self.override_start = False
+
+            # Override default settings if provided
+            self.start_year = kwargs.get('start_year', self.start_year)
+            self.end_year = kwargs.get('end_year', self.end_year)
+            self.min_docket = kwargs.get('min_docket', self.min_docket)
+            self.max_docket = kwargs.get('max_docket', self.max_docket)
+            
+            self.logger.info(f"Configured to scrape dockets from {self.start_year} to {self.end_year}")
     
     def start_requests(self):
         """
         Generates initial requests to scrape Supreme Court dockets from configured years.
         """
-        self.logger.info('Scraping Supreme Court dockets')
-        
-        # Directly iterate through all docket pages
-        for year in range(self.start_year, self.end_year):
-            for docket_id in range(self.min_docket, self.max_docket):
-                url = f"https://www.supremecourt.gov/search.aspx?filename=/docket/docketfiles/html/public/{year}-{docket_id}.html"
-                yield scrapy.Request(
-                    url=url,
-                    callback=self.parse,
-                    cb_kwargs={"doctype": "supreme_docket"},
-                    errback=self.handle_error
-                )
+        if not self.override_start:
+            self.logger.info('Scraping Supreme Court dockets')
+            
+            # Directly iterate through all docket pages
+            for year in range(self.start_year, self.end_year):
+                for docket_id in range(self.min_docket, self.max_docket):
+                    url = f"https://www.supremecourt.gov/search.aspx?filename=/docket/docketfiles/html/public/{year}-{docket_id}.html"
+                    yield scrapy.Request(
+                        url=url,
+                        callback=self.parse,
+                        cb_kwargs={"doctype": "supreme_docket"},
+                        errback=self.handle_error
+                    )
+        else:
+            # Collect amicus brief pdf urls from lines in the provided file; 
+            # each line should contain a single url.
+            self.logger.info('Scraping Supreme Court amicus brief pdf urls')
+            with open(self.pdfurls, 'r') as f:
+                for line in f:
+                    url = line.strip()
+                    if url:
+                        yield scrapy.Request(
+                            url=url,
+                            callback=self.parse,
+                            cb_kwargs={"doctype": "supreme_document"},
+                            errback=self.handle_error
+                        )
     
     def handle_error(self, failure):
         """
