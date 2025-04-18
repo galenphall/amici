@@ -76,6 +76,8 @@ class SupremeCourtSpider(scrapy.Spider):
             with open(self.pdfurls, 'r') as f:
                 for line in f:
                     url = line.strip()
+                    if url.startswith("www"):
+                        url = "https://" + url
                     if url:
                         yield scrapy.Request(
                             url=url,

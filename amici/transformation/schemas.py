@@ -57,39 +57,3 @@ AMICI_EXTRACTION_SCHEMA = {
     },
     "required": ["dockets", "amici"]
 }
-
-# Schema for appendix extraction (with appendix case)
-APPENDIX_EXTRACTION_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "dockets": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "year": {"type": "integer"},
-                    "number": {"type": "integer"},
-                    "position": {"type": "string", "enum": ["P", "R"]}
-                },
-                "required": ["year", "number", "position"]
-            }
-        },
-        "amici": {
-            "type": "array",
-            "items": {"type": "string"}
-        },
-        "lawyers": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "role": {"type": "string"},
-                    "employer": {"type": "string"}
-                },
-                "required": ["name"]
-            }
-        }
-    },
-    "required": ["dockets", "amici"]
-}
