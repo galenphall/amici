@@ -10,3 +10,5 @@ storage_object_admin_key.json
 *.log
 CLAUDE.md
 **/CLAUDE.md
+data/extracted_entities/*
+*.txt
