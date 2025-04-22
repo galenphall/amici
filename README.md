@@ -34,22 +34,101 @@ We use LLM structured output APIs to get lists of amici from the title page of a
 Documents with appendices are harder to deal with, because we don't know _a priori_ how many pages we will need to scan, or even which appendix the amici will be listed in, and attempting to extract this information reliably is difficult. Instead we feed the entire text of these documents through a separate structured response query to a more powerful (and thus more expensive) LLM capable of reliably processing entire briefs worth of text.
 
 ## Loading
-Once the amici are extracted, we create a tabular dataset with the following fields:
-### Amici table
-- `docketYear`: The two-digit year code for the docket
-- `docketNumber`: The 1-5 digit docket number
-- `position`: Either "P" for "supports petitioner" or "R" for "supports respondent"
-- `amicus`: The name of the amicus
-- `docketURL`: The URL of the original docket that the position was scraped from
-- `briefURL`: The URL of the pdf amicus brief that the position was scraped from
-- `textBucket`: The bucket location for the text sent to the LLM API
-### Lawyer table
-- `docketYear`: The two-digit year code for the docket
-- `docketNumber`: The 1-5 digit docket number
-- `position`: Either "P" for "supports petitioner" or "R" for "supports respondent"
-- `name`: The name of the individual lawyer
-- `role`: The role (e.g. general counsel) of the lawyer on behalf of the amici
-- `employer`: The name of the lawyer's firm or employer
-- `docketURL`: The URL of the original docket that the position was scraped from
-- `briefURL`: The URL of the pdf amicus brief that the position was scraped from
-- `textBucket`: The bucket location for the text sent to the LLM API
+Once the amici are extracted, we create a tabular dataset. See next section.
+
+# Database Schema
+
+The database is structured to capture relationships between documents (amicus briefs), dockets, amici curiae, and lawyers. This relational structure enables efficient querying across all dimensions of the data.
+
+## Tables
+
+### documents
+
+Primary table storing metadata about each amicus brief.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| document_id | INTEGER | Primary key, auto-incremented |
+| url | TEXT | URL to the original document on supremecourt.gov |
+| docket_url | TEXT | URL to the docket page |
+| date | TEXT | Original date string (e.g., "Jul 27 2018") |
+| date_formatted | DATE | Normalized date (YYYY-MM-DD format) |
+| label | TEXT | Brief's label from the docket page |
+| doc_title | TEXT | Document title |
+| blob | TEXT | Path to document in storage |
+| transcribed | BOOLEAN | Whether text was successfully extracted |
+| neededOCR | BOOLEAN | Whether OCR was required |
+| complete_amici_list | BOOLEAN | Whether all amici are listed or abbreviated |
+| counsel_of_record | TEXT | Name of counsel of record |
+
+### dockets
+
+Cases referenced by each document. A single brief may refer to multiple dockets.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| docket_id | INTEGER | Primary key, auto-incremented |
+| document_id | INTEGER | Foreign key to documents table |
+| year | INTEGER | Two-digit year identifier (e.g., 18 for 2018) |
+| number | INTEGER | Docket number within the year |
+| position | TEXT | Position supported ("P" for Petitioner, "R" for Respondent) |
+
+### amici
+
+Organizations or individuals filing as amici curiae.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| amicus_id | INTEGER | Primary key, auto-incremented |
+| document_id | INTEGER | Foreign key to documents table |
+| name | TEXT | Name of the amicus curiae |
+| category | TEXT | Category (e.g., "organization", "individual", "government") |
+
+### lawyers
+
+Legal representatives associated with each document.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| lawyer_id | INTEGER | Primary key, auto-incremented |
+| document_id | INTEGER | Foreign key to documents table |
+| name | TEXT | Lawyer's name |
+| role | TEXT | Role (e.g., "Counsel of Record") |
+| employer | TEXT | Law firm or organization |
+| is_counsel_of_record | BOOLEAN | Whether this lawyer is the primary counsel |
+
+## Relationships
+
+- **One-to-Many**: A document can reference multiple dockets
+- **One-to-Many**: A document can have multiple amici
+- **One-to-Many**: A document can have multiple lawyers
+- **One-to-One**: Each document has at most one counsel of record
+
+## Indexes
+
+| Table | Index | Columns | Purpose |
+|-------|-------|---------|---------|
+| documents | idx_document_date | date_formatted | Optimize queries by date |
+| documents | idx_document_counsel | counsel_of_record | Optimize lookups by counsel |
+| dockets | idx_dockets_year_number | year, number | Optimize docket lookups |
+| lawyers | idx_lawyers_name | name | Optimize lawyer name searches |
+| amici | idx_amici_name | name | Optimize amici name searches |
+
+## Example Queries
+
+### Find all briefs filed by a specific organization
+
+```sql
+SELECT d.* FROM documents d
+JOIN amici a ON d.document_id = a.document_id
+WHERE a.name = 'American Civil Liberties Union' AND a.category = 'organization';
+```
+
+### Find all lawyers who have served as counsel of record
+```sql
+sqlSELECT DISTINCT name, COUNT(*) as brief_count 
+FROM lawyers 
+WHERE is_counsel_of_record = 1 
+GROUP BY name 
+ORDER BY brief_count DESC;
+```
