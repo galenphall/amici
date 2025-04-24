@@ -28,9 +28,9 @@ You are a legal assistant extracting information from Supreme Court amicus brief
 
 Important guidelines:
 1. The docket number format is typically YY-NNNN (e.g., "20-1599")
-2. Amici information is usually on the cover page and first few pages
+2. Amici information is usually on the cover page and first few pages, but may also be in the appendix
 3. For position, "P" means supporting petitioner(s) and "R" means supporting respondent(s)
-4. Extract ALL named amici - if there's a phrase like "and 10 other organizations", only include specifically named entities
+4. Extract ALL named amici - if there's a phrase like "and 10 other organizations", find those organizations
 5. For lawyers, focus on counsel of record and those with specific titles or firms listed
 
 Respond in this JSON format:
@@ -48,7 +48,7 @@ Respond in this JSON format:
             "category": "<individual|organization|government|academic|coalition>"
         }
     ],
-    "complete_amici_list": <true or false>,
+    "all_amici_on_cover_page": <true or false>,
     "lawyers": [
         {
             "name": "<full name>",
@@ -63,7 +63,7 @@ For incomplete lists (indicated by phrases like "see appendix"), set "complete_a
 
 Example:
 Brief text: "No. 20-1599... BRIEF FOR AMICI CURIAE NATIONAL CRIME VICTIM LAW INSTITUTE IN SUPPORT OF PETITIONERS... PAUL G. CASSELL, Counsel of Record, UTAH APPELLATE PROJECT, S.J. QUINNEY COLLEGE OF LAW AT THE UNIVERSITY OF UTAH*..."
-Output: {"dockets":[{"year":20,"number":1599,"position":"P"}],"amici":[{"name":"National Crime Victim Law Institute","category":"organization"}],"complete_amici_list":true,"lawyers":[{"name":"Paul G. Cassell","role":"Counsel of Record","employer":"Utah Appellate Project, S.J. Quinney College of Law at the University of Utah"}],"counsel_of_record":"Paul G. Cassell"}
+Output: {"dockets":[{"year":20,"number":1599,"position":"P"}],"amici":[{"name":"National Crime Victim Law Institute","category":"organization"}],"all_amici_on_cover_page":true,"lawyers":[{"name":"Paul G. Cassell","role":"Counsel of Record","employer":"Utah Appellate Project, S.J. Quinney College of Law at the University of Utah"}],"counsel_of_record":"Paul G. Cassell"}
 """
 
 # Schema for appendix detection (first stage)
@@ -90,57 +90,6 @@ APPENDIX_DETECTION_SCHEMA = {
     "required": ["has_appendix", "confidence", "reason"]
 }
 
-IMPROVED_AMICI_EXTRACTION_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "dockets": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "year": {"type": "integer", "description": "Two-digit year of docket"},
-                    "number": {"type": "integer", "description": "Docket number"},
-                    "position": {"type": "string", "enum": ["P", "R"], "description": "P for petitioner, R for respondent"}
-                },
-                "required": ["year", "number", "position"]
-            }
-        },
-        "amici": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Full official name of amicus"},
-                    "category": {"type": "string", "enum": ["individual", "organization", "government", "academic", "coalition"], "description": "Category of amicus"}
-                },
-                "required": ["name", "category"]
-            }
-        },
-        "complete_amici_list": {
-            "type": "boolean",
-            "description": "Whether this is the complete list of amici or if some are only listed in an appendix"
-        },
-        "lawyers": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Full name of lawyer"},
-                    "role": {"type": "string", "description": "Role or title of lawyer"},
-                    "employer": {"type": "string", "description": "Firm or organization employing the lawyer"}
-                },
-                "required": ["name"]
-            }
-        },
-        "counsel_of_record": {
-            "type": "string", 
-            "description": "Name of the primary counsel of record"
-        }
-    },
-    "required": ["dockets", "amici", "complete_amici_list"]
-}
-
-# Schema for amici extraction (no appendix case)
 AMICI_EXTRACTION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -167,9 +116,9 @@ AMICI_EXTRACTION_SCHEMA = {
                 "required": ["name", "category"]
             }
         },
-        "complete_amici_list": {
+        "all_amici_on_cover_page": {
             "type": "boolean",
-            "description": "Whether this is the complete list of amici or if some are only listed in an appendix"
+            "description": "Whether the amici are all listed on the cover page or if some are only in the appendix or elsewhere"
         },
         "lawyers": {
             "type": "array",

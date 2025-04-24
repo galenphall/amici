@@ -9,7 +9,9 @@ storage_object_admin_key.json
 *.log
 CLAUDE.md
 **/CLAUDE.md
-data/extracted_entities/*
-data/extracted_entities_linked/*
+amici/data/extracted_entities/*
+amic/data/extracted_entities_linked/*
 *.txt
 *.pdf
+*.json
+
