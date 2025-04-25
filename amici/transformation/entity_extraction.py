@@ -25,6 +25,36 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
+# OpenAI model pricing per 1M tokens
+MODEL_PRICING = {
+    "gpt-4.1": {"input": 1.00, "output": 4.00},
+    "gpt-4.1-2025-04-14": {"input": 1.00, "output": 4.00},
+    "gpt-4.1-mini": {"input": 0.20, "output": 0.80},
+    "gpt-4.1-mini-2025-04-14": {"input": 0.20, "output": 0.80},
+    "gpt-4.1-nano": {"input": 0.05, "output": 0.20},
+    "gpt-4.1-nano-2025-04-14": {"input": 0.05, "output": 0.20},
+    "gpt-4.5-preview": {"input": 37.50, "output": 75.00},
+    "gpt-4.5-preview-2025-02-27": {"input": 37.50, "output": 75.00},
+    "gpt-4o": {"input": 1.25, "output": 5.00},
+    "gpt-4o-2024-08-06": {"input": 1.25, "output": 5.00},
+    "gpt-4o-mini": {"input": 0.075, "output": 0.30},
+    "gpt-4o-mini-2024-07-18": {"input": 0.075, "output": 0.30},
+    "o1": {"input": 7.50, "output": 30.00},
+    "o1-2024-12-17": {"input": 7.50, "output": 30.00},
+    "o1-pro": {"input": 75.00, "output": 300.00},
+    "o1-pro-2025-03-19": {"input": 75.00, "output": 300.00},
+    "o3": {"input": 5.00, "output": 20.00},
+    "o3-2025-04-16": {"input": 5.00, "output": 20.00},
+    "o4-mini": {"input": 0.55, "output": 2.20},
+    "o4-mini-2025-04-16": {"input": 0.55, "output": 2.20},
+    "o3-mini": {"input": 0.55, "output": 2.20},
+    "o3-mini-2025-01-31": {"input": 0.55, "output": 2.20},
+    "o1-mini": {"input": 0.55, "output": 2.20},
+    "o1-mini-2024-09-12": {"input": 0.55, "output": 2.20},
+    "computer-use-preview": {"input": 1.50, "output": 6.00},
+    "computer-use-preview-2025-03-11": {"input": 1.50, "output": 6.00}
+}
+
 def list_txt_files_from_gcs(bucket_name: str, prefix: str) -> List[str]:
     """
     List all text files from the specified GCS bucket and prefix.
@@ -47,38 +77,79 @@ def list_txt_files_from_gcs(bucket_name: str, prefix: str) -> List[str]:
     logger.info(f"Found {len(txt_files)} text files")
     return txt_files
 
-def fetch_txt_files_from_gcs(bucket_name: str, prefix: str, test_batch_size: int = None) -> Dict[str, str]:
+def read_blob_list_from_file(file_path: str) -> List[str]:
     """
-    Fetch text files from the specified GCS bucket and prefix.
-    If test_batch_size is specified, only fetches that many files.
+    Read a list of blob names from a file, one blob name per line.
+    
+    Args:
+        file_path: Path to the file containing blob names
+        
+    Returns:
+        List of blob names
+    """
+    with open(file_path, "r") as f:
+        # Read non-empty lines and strip whitespace
+        blob_names = [line.strip() for line in f if line.strip()]
+    
+    logger.info(f"Read {len(blob_names)} blob names from {file_path}")
+    return blob_names
+
+def fetch_txt_files_from_gcs(bucket_name: str, prefix: str = None, test_batch_size: int = None, 
+                             specific_blobs: List[str] = None) -> Dict[str, str]:
+    """
+    Fetch text files from the specified GCS bucket.
+    If specific_blobs is provided, fetches only those blobs (converting PDFs to corresponding TXT files).
+    Otherwise, uses prefix to list and fetch files, with optional test_batch_size limit.
     
     Args:
         bucket_name: Name of the GCS bucket
-        prefix: Prefix of files to fetch
+        prefix: Prefix of files to fetch (used if specific_blobs is None)
         test_batch_size: If set, limits the number of files fetched to this value
+        specific_blobs: List of specific blob names to fetch
         
     Returns:
         Dictionary mapping filenames to text content
     """
-    # First, list all matching files
-    txt_file_names = list_txt_files_from_gcs(bucket_name, prefix)
-    
-    if not txt_file_names:
-        return {}
-    
-    # If test batch size is specified, randomly sample files
-    if test_batch_size and test_batch_size < len(txt_file_names):
-        logger.info(f"Sampling {test_batch_size} files for test batch")
-        txt_file_names = random.sample(txt_file_names, test_batch_size)
-    
-    # Now fetch only the required files
     gcs = GCSFetch(bucket_name)
     text_files = {}
     
-    for blob_name in txt_file_names:
-        logger.info(f"Fetching {blob_name}")
-        content, metadata = gcs.get_from_bucket(blob_name)
-        text_files[blob_name] = content.decode('utf-8')
+    if specific_blobs:
+        logger.info(f"Fetching {len(specific_blobs)} specific text files")
+        for blob_name in specific_blobs:
+            # If the blob is a PDF, find the corresponding TXT file
+            if blob_name.lower().endswith('.pdf'):
+                txt_blob_name = blob_name[:-4] + '.txt'
+                logger.info(f"Converting PDF blob {blob_name} to txt blob {txt_blob_name}")
+            else:
+                txt_blob_name = blob_name
+            
+            if not txt_blob_name.lower().endswith('.txt'):
+                logger.warning(f"Skipping non-text blob: {blob_name}")
+                continue
+            
+            try:
+                logger.info(f"Fetching {txt_blob_name}")
+                content, metadata = gcs.get_from_bucket(txt_blob_name)
+                text_files[txt_blob_name] = content.decode('utf-8')
+            except Exception as e:
+                logger.error(f"Failed to fetch {txt_blob_name}: {e}")
+    else:
+        # Original functionality for fetching by prefix
+        txt_file_names = list_txt_files_from_gcs(bucket_name, prefix)
+        
+        if not txt_file_names:
+            return {}
+        
+        # If test batch size is specified, randomly sample files
+        if test_batch_size and test_batch_size < len(txt_file_names):
+            logger.info(f"Sampling {test_batch_size} files for test batch")
+            txt_file_names = random.sample(txt_file_names, test_batch_size)
+        
+        # Now fetch only the required files
+        for blob_name in txt_file_names:
+            logger.info(f"Fetching {blob_name}")
+            content, metadata = gcs.get_from_bucket(blob_name)
+            text_files[blob_name] = content.decode('utf-8')
     
     logger.info(f"Fetched {len(text_files)} text files")
     return text_files
@@ -102,20 +173,36 @@ def estimate_tokens_and_cost(texts: List[str], prompt: str, model: str = "gpt-4.
     
     prompt_tokens = len(encoding.encode(prompt))
     
-    total_tokens = 0
+    # Calculate input tokens
+    input_tokens = 0
     for text in texts:
         # Count tokens for this text + prompt
         text_tokens = len(encoding.encode(text))
-        # Add tokens for this request (prompt + text + estimated completion)
-        total_tokens += prompt_tokens + text_tokens
-        # Rough completion estimate (can adjust based on observed completion sizes)
-        total_tokens += 500  # Rough estimate for JSON response
+        # Add tokens for this request (prompt + text)
+        input_tokens += prompt_tokens + text_tokens
     
-    # Batch API has 50% discount compared to standard API
-    cost_per_1M_tokens = 0.15 * 0.5  # 50% discount for batch API
-    estimated_cost = (total_tokens / 1000000) * cost_per_1M_tokens
+    # Estimate output tokens (rough estimate for JSON response)
+    output_tokens = len(texts) * 500  # Rough estimate: 500 tokens per response
     
-    return total_tokens, estimated_cost
+    # Get model pricing
+    model_base = model.split('-2')[0]  # Strip version date if present
+    if model_base in MODEL_PRICING:
+        pricing = MODEL_PRICING[model_base]
+    else:
+        logger.warning(f"Pricing not found for model {model}. Using default pricing.")
+        pricing = {"input": 0.05, "output": 0.20}  # Default to gpt-4.1-nano pricing
+    
+    # Calculate cost per token type
+    input_cost = (input_tokens / 1000000) * pricing["input"]
+    output_cost = (output_tokens / 1000000) * pricing["output"]
+    
+    total_tokens = input_tokens + output_tokens
+    
+    logger.info(f"Cost breakdown: Input tokens: {input_tokens:,}, Output tokens (est.): {output_tokens:,}")
+    logger.info(f"Pricing for {model}: ${pricing['input']}/1M input tokens, ${pricing['output']}/1M output tokens")
+    logger.info(f"Total cost: ${input_cost + output_cost:.2f}")
+    
+    return total_tokens, total_cost
 
 def create_batch_requests(files_dict: Dict[str, str], prompt: str, model: str = "gpt-4.1-nano") -> str:
     """
@@ -356,7 +443,8 @@ def save_extraction_results(results: Dict[str, Any], output_dir: str) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Extract entities from amicus brief text files using OpenAI Batch API")
     parser.add_argument("--bucket", required=True, help="GCS bucket name")
-    parser.add_argument("--prefix", required=True, help="GCS prefix for text files")
+    parser.add_argument("--prefix", help="GCS prefix for text files (used if --blob-list-file not provided)")
+    parser.add_argument("--blob-list-file", help="File containing blob names (one per line) to process")
     parser.add_argument("--output-dir", default="output", help="Directory to save extraction results")
     parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
     parser.add_argument("--model", default="gpt-4.1-nano", help="OpenAI model to use")
@@ -366,15 +454,27 @@ def main():
                        help="Run a test batch with limited number of files (default: 100)")
     args = parser.parse_args()
     
-    # Fetch text files from GCS (with test batch limit directly applied)
+    # Make sure we have either a prefix or a blob list file
+    if not args.prefix and not args.blob_list_file:
+        logger.error("Either --prefix or --blob-list-file must be provided")
+        parser.print_help()
+        return
+    
+    # Get the list of specific blobs if provided
+    specific_blobs = None
+    if args.blob_list_file:
+        specific_blobs = read_blob_list_from_file(args.blob_list_file)
+    
+    # Fetch text files from GCS
     text_files = fetch_txt_files_from_gcs(
-        args.bucket, 
+        args.bucket,
         args.prefix,
-        args.test_batch  # Pass test batch size directly
+        args.test_batch,
+        specific_blobs
     )
     
     if not text_files:
-        logger.error(f"No text files found in gs://{args.bucket}/{args.prefix}")
+        logger.error(f"No text files found in gs://{args.bucket}/{args.prefix or 'specified blobs'}")
         return
     
     # Estimate tokens and cost (with 50% Batch API discount)

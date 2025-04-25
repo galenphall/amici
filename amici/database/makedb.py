@@ -4,7 +4,7 @@ import numpy as np
 import sqlite3
 from datetime import datetime
 import argparse
-import tqdm
+from tqdm import tqdm
 import logging
 
 # Set up logging
@@ -35,7 +35,7 @@ def map_urls_to_json():
     metadata from the original pdfs to the JSON files.
     """
     df = pd.read_csv('../data/amicus_briefs.csv')
-    json_filenames = os.listdir('../../data/extracted_entities')
+    json_filenames = os.listdir('../data/extracted_entities')
 
     df['json_filename'] = df['url'].apply(lambda x: x.split('/')[-1].replace('.pdf', '.json'))
 
@@ -47,7 +47,7 @@ def map_urls_to_json():
             row = df[df['json_filename'] == f]
             if not row.empty:
                 # Read the JSON file
-                with open(f'../../data/extracted_entities/{f}', 'r') as file:
+                with open(f'../data/extracted_entities/{f}', 'r') as file:
                     data = json.load(file)
                 
                 # Add the URL and metadata to the JSON data
@@ -58,7 +58,7 @@ def map_urls_to_json():
                 
                 try:
                     # Write the updated JSON data back to the file
-                    with open(f'../../data/extracted_entities_linked/{f}', 'w') as file:
+                    with open(f'../data/extracted_entities_linked/{f}', 'w') as file:
                         json.dump(ensure_json_serializable(data), file, indent=4)
                 except Exception as e:
                     print(f"Error writing to file {f}: {e}")
