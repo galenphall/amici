@@ -1,3 +1,8 @@
+from typing import List, Optional, Literal
+from pydantic import BaseModel
+from pydantic import Field
+from pydantic import constr
+
 APPENDIX_DETECTION_PROMPT = """
 You are a legal assistant analyzing Supreme Court amicus briefs. Determine if this brief contains an appendix listing amici curiae (organizations or individuals filing the brief).
 
@@ -139,3 +144,31 @@ AMICI_EXTRACTION_SCHEMA = {
     },
     "required": ["dockets", "amici", "complete_amici_list"]
 }
+
+class AppendixDetectionModel(BaseModel):
+    has_appendix: bool
+    confidence: float
+    reason: str
+    appendix_location: Optional[str] = None
+
+class Docket(BaseModel):
+    year: int
+    number: int
+    position: Literal["P", "R"]
+
+class Amicus(BaseModel):
+    name: str
+    category: Literal["individual", "organization", "government", "academic", "coalition"]
+
+class Lawyer(BaseModel):
+    name: str
+    role: Optional[str] = None
+    employer: Optional[str] = None
+
+class AmiciExtractionModel(BaseModel):
+    dockets: List[Docket]
+    amici: List[Amicus]
+    all_amici_on_cover_page: bool
+    complete_amici_list: bool
+    lawyers: List[Lawyer]
+    counsel_of_record: Optional[str] = None

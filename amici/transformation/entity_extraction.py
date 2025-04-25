@@ -17,6 +17,7 @@ import random
 sys.path.append(str(Path(__file__).parent.parent.parent))
 from amici.utils.gcs import GCSFetch
 from amici.transformation.prompts import AMICI_EXTRACTION_PROMPT, AMICI_EXTRACTION_SCHEMA
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -94,63 +95,62 @@ def read_blob_list_from_file(file_path: str) -> List[str]:
     logger.info(f"Read {len(blob_names)} blob names from {file_path}")
     return blob_names
 
-def fetch_txt_files_from_gcs(bucket_name: str, prefix: str = None, test_batch_size: int = None, 
+def fetch_txt_files_from_gcs(bucket_name: str,
+                             prefix: str = None,
+                             test_batch_size: int = None,
                              specific_blobs: List[str] = None) -> Dict[str, str]:
     """
-    Fetch text files from the specified GCS bucket.
-    If specific_blobs is provided, fetches only those blobs (converting PDFs to corresponding TXT files).
-    Otherwise, uses prefix to list and fetch files, with optional test_batch_size limit.
-    
-    Args:
-        bucket_name: Name of the GCS bucket
-        prefix: Prefix of files to fetch (used if specific_blobs is None)
-        test_batch_size: If set, limits the number of files fetched to this value
-        specific_blobs: List of specific blob names to fetch
-        
-    Returns:
-        Dictionary mapping filenames to text content
+    Fetch text files from the specified GCS bucket in parallel.
     """
     gcs = GCSFetch(bucket_name)
-    text_files = {}
-    
+    text_files: Dict[str, str] = {}
+    blob_names: List[str] = []
+
+    # Determine which blobs to fetch (and convert PDFs → .txt)
     if specific_blobs:
-        logger.info(f"Fetching {len(specific_blobs)} specific text files")
-        for blob_name in specific_blobs:
-            # If the blob is a PDF, find the corresponding TXT file
-            if blob_name.lower().endswith('.pdf'):
-                txt_blob_name = blob_name[:-4] + '.txt'
-                logger.info(f"Converting PDF blob {blob_name} to txt blob {txt_blob_name}")
+        if test_batch_size:
+            logger.info(f"Sampling {test_batch_size} specific blobs for test batch")
+            specific_blobs = random.sample(specific_blobs, min(test_batch_size, len(specific_blobs)))
+        logger.info(f"Preparing to fetch {len(specific_blobs)} specific text files")
+        for blob in specific_blobs:
+            if blob.lower().endswith('.pdf'):
+                txt_blob = blob[:-4] + '.txt'
+                logger.info(f"Converting PDF blob {blob} → {txt_blob}")
             else:
-                txt_blob_name = blob_name
-            
-            if not txt_blob_name.lower().endswith('.txt'):
-                logger.warning(f"Skipping non-text blob: {blob_name}")
+                txt_blob = blob
+            if not txt_blob.lower().endswith('.txt'):
+                logger.warning(f"Skipping non-text blob: {blob}")
                 continue
-            
-            try:
-                logger.info(f"Fetching {txt_blob_name}")
-                content, metadata = gcs.get_from_bucket(txt_blob_name)
-                text_files[txt_blob_name] = content.decode('utf-8')
-            except Exception as e:
-                logger.error(f"Failed to fetch {txt_blob_name}: {e}")
+            blob_names.append(txt_blob)
     else:
-        # Original functionality for fetching by prefix
         txt_file_names = list_txt_files_from_gcs(bucket_name, prefix)
-        
         if not txt_file_names:
             return {}
-        
-        # If test batch size is specified, randomly sample files
         if test_batch_size and test_batch_size < len(txt_file_names):
             logger.info(f"Sampling {test_batch_size} files for test batch")
             txt_file_names = random.sample(txt_file_names, test_batch_size)
-        
-        # Now fetch only the required files
-        for blob_name in txt_file_names:
-            logger.info(f"Fetching {blob_name}")
-            content, metadata = gcs.get_from_bucket(blob_name)
-            text_files[blob_name] = content.decode('utf-8')
-    
+        blob_names = txt_file_names
+
+    if not blob_names:
+        logger.info("No blobs to fetch")
+        return {}
+
+    logger.info(f"Fetching {len(blob_names)} text files in parallel")
+    max_workers = min(32, len(blob_names))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_blob = {
+            executor.submit(gcs.get_from_bucket, blob_name): blob_name
+            for blob_name in blob_names
+        }
+        for future in as_completed(future_to_blob):
+            blob_name = future_to_blob[future]
+            try:
+                content, _ = future.result()
+                text_files[blob_name] = content.decode('utf-8')
+                logger.info(f"Fetched {blob_name}")
+            except Exception as e:
+                logger.error(f"Failed to fetch {blob_name}: {e}")
+
     logger.info(f"Fetched {len(text_files)} text files")
     return text_files
 
@@ -202,7 +202,7 @@ def estimate_tokens_and_cost(texts: List[str], prompt: str, model: str = "gpt-4.
     logger.info(f"Pricing for {model}: ${pricing['input']}/1M input tokens, ${pricing['output']}/1M output tokens")
     logger.info(f"Total cost: ${input_cost + output_cost:.2f}")
     
-    return total_tokens, total_cost
+    return total_tokens, input_cost + output_cost
 
 def create_batch_requests(files_dict: Dict[str, str], prompt: str, model: str = "gpt-4.1-nano") -> str:
     """
@@ -229,7 +229,7 @@ def create_batch_requests(files_dict: Dict[str, str], prompt: str, model: str = 
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": text}
                 ],
-                "response_format": {"type": "json_object"},
+                "response_format": {"type": "json_schema", "json_schema": {"strict": True, "schema": AMICI_EXTRACTION_SCHEMA}},
                 "temperature": 0.0
             }
         }
