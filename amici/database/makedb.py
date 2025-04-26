@@ -29,13 +29,14 @@ def ensure_json_serializable(obj):
     else:
         raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
-def map_urls_to_json():
+def map_urls_to_json(input_dir='../data/extracted_entities', output_dir='../data/extracted_entities_linked'):
     """
     Iterate through the JSON output files from the OpenAI API and add the corresponding URLs and 
     metadata from the original pdfs to the JSON files.
     """
     df = pd.read_csv('../data/amicus_briefs.csv')
-    json_filenames = os.listdir('../data/extracted_entities')
+    json_filenames = os.listdir(input_dir)
+    json_filenames = [f for f in json_filenames if f.endswith('.json')]
 
     df['json_filename'] = df['url'].apply(lambda x: x.split('/')[-1].replace('.pdf', '.json'))
 
@@ -47,7 +48,7 @@ def map_urls_to_json():
             row = df[df['json_filename'] == f]
             if not row.empty:
                 # Read the JSON file
-                with open(f'../data/extracted_entities/{f}', 'r') as file:
+                with open(os.path.join(input_dir, f), 'r') as file:
                     data = json.load(file)
                 
                 # Add the URL and metadata to the JSON data
@@ -58,7 +59,7 @@ def map_urls_to_json():
                 
                 try:
                     # Write the updated JSON data back to the file
-                    with open(f'../data/extracted_entities_linked/{f}', 'w') as file:
+                    with open(os.path.join(output_dir, f), 'w') as file:
                         json.dump(ensure_json_serializable(data), file, indent=4)
                 except Exception as e:
                     print(f"Error writing to file {f}: {e}")
@@ -266,12 +267,21 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
 
-    if args.map_urls:
-        map_urls_to_json()
-        print("Mapped URLs to JSON files.")
-    
     if not os.path.isdir(args.folder):
         print(f"Error: Folder '{args.folder}' not found.")
         exit(1)
+
+    source_folder = args.folder
+
+    if args.map_urls:
+        if not os.path.isdir(args.folder.strip('/') + '_linked/'):
+            os.makedirs(args.folder.strip('/') + '_linked/')
+        else:
+            print(f"Warning: Folder '{args.folder.strip('/') + '_linked/'}' already exists. Overwriting files.")
+
+        map_urls_to_json(args.folder, args.folder.strip('/') + '_linked/')
+        print("Mapped URLs to JSON files.")
+
+        source_folder = args.folder.strip('/') + '_linked/'
     
-    create_database(args.folder, args.db, args.batch)
+    create_database(source_folder, args.db, args.batch)

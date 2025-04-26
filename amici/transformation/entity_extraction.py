@@ -229,7 +229,7 @@ def create_batch_requests(files_dict: Dict[str, str], prompt: str, model: str = 
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": text}
                 ],
-                "response_format": {"type": "json_schema", "json_schema": {"strict": True, "schema": AMICI_EXTRACTION_SCHEMA}},
+                "response_format": {"type": "json_schema", "json_schema": {"name": "AmiciExtractionSchema", "strict": True, "schema": AMICI_EXTRACTION_SCHEMA}},
                 "temperature": 0.0
             }
         }

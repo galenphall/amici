@@ -13,7 +13,7 @@ Look for these indicators:
 
 Respond in this JSON format:
 {
-    "has_appendix": <true or false>,
+    "has_appendix": <true or False>,
     "confidence": <number from 0 to 1>,
     "reason": "<detailed reasoning>",
     "appendix_location": "<page number or section if known, otherwise null>"
@@ -25,7 +25,7 @@ Output: {"has_appendix": true, "confidence": 0.95, "reason": "Table of contents 
 
 Example 2:
 Brief text: "BRIEF AMICUS CURIAE OF THE AMERICAN BAR ASSOCIATION IN SUPPORT OF RESPONDENTS... TABLE OF CONTENTS... ARGUMENT...CONCLUSION"
-Output: {"has_appendix": false, "confidence": 0.9, "reason": "No reference to an appendix listing amici in the table of contents or first pages", "appendix_location": null}
+Output: {"has_appendix": False, "confidence": 0.9, "reason": "No reference to an appendix listing amici in the table of contents or first pages", "appendix_location": null}
 """
 
 AMICI_EXTRACTION_PROMPT = """
@@ -37,6 +37,7 @@ Important guidelines:
 3. For position, "P" means supporting petitioner(s) and "R" means supporting respondent(s)
 4. Extract ALL named amici - if there's a phrase like "and 10 other organizations", find those organizations
 5. For lawyers, focus on counsel of record and those with specific titles or firms listed
+6. For lawyers, always include name, role, and employer - if any information is not available, use empty string ""
 
 Respond in this JSON format:
 {
@@ -53,18 +54,16 @@ Respond in this JSON format:
             "category": "<individual|organization|government|academic|coalition>"
         }
     ],
-    "all_amici_on_cover_page": <true or false>,
+    "all_amici_on_cover_page": <true or False>,
     "lawyers": [
         {
             "name": "<full name>",
-            "role": "<role or title if specified>",
-            "employer": "<firm or organization if specified>"
+            "role": "<role or title if specified, or empty string>",
+            "employer": "<firm or organization if specified, or empty string>"
         }
     ],
     "counsel_of_record": "<name of primary counsel>"
 }
-
-For incomplete lists (indicated by phrases like "see appendix"), set "complete_amici_list" to false.
 
 Example:
 Brief text: "No. 20-1599... BRIEF FOR AMICI CURIAE NATIONAL CRIME VICTIM LAW INSTITUTE IN SUPPORT OF PETITIONERS... PAUL G. CASSELL, Counsel of Record, UTAH APPELLATE PROJECT, S.J. QUINNEY COLLEGE OF LAW AT THE UNIVERSITY OF UTAH*..."
@@ -107,7 +106,8 @@ AMICI_EXTRACTION_SCHEMA = {
                     "number": {"type": "integer", "description": "Docket number"},
                     "position": {"type": "string", "enum": ["P", "R"], "description": "P for petitioner, R for respondent"}
                 },
-                "required": ["year", "number", "position"]
+                "required": ["year", "number", "position"],
+                "additionalProperties": False
             }
         },
         "amici": {
@@ -118,7 +118,8 @@ AMICI_EXTRACTION_SCHEMA = {
                     "name": {"type": "string", "description": "Full official name of amicus"},
                     "category": {"type": "string", "enum": ["individual", "organization", "government", "academic", "coalition"], "description": "Category of amicus"}
                 },
-                "required": ["name", "category"]
+                "required": ["name", "category"],
+                "additionalProperties": False
             }
         },
         "all_amici_on_cover_page": {
@@ -134,7 +135,8 @@ AMICI_EXTRACTION_SCHEMA = {
                     "role": {"type": "string", "description": "Role or title of lawyer"},
                     "employer": {"type": "string", "description": "Firm or organization employing the lawyer"}
                 },
-                "required": ["name"]
+                "required": ["name", "role", "employer"],
+                "additionalProperties": False
             }
         },
         "counsel_of_record": {
@@ -142,7 +144,8 @@ AMICI_EXTRACTION_SCHEMA = {
             "description": "Name of the primary counsel of record"
         }
     },
-    "required": ["dockets", "amici", "complete_amici_list"]
+    "required": ["dockets", "amici", "all_amici_on_cover_page", "lawyers", "counsel_of_record"],
+    "additionalProperties": False
 }
 
 class AppendixDetectionModel(BaseModel):
@@ -162,8 +165,8 @@ class Amicus(BaseModel):
 
 class Lawyer(BaseModel):
     name: str
-    role: Optional[str] = None
-    employer: Optional[str] = None
+    role: str
+    employer: str
 
 class AmiciExtractionModel(BaseModel):
     dockets: List[Docket]
