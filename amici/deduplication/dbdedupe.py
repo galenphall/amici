@@ -26,248 +26,76 @@ from amici.utils.normalizers import normalize_interest_group_name, shorten_commo
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class DedupeGraph(nx.Graph):
-    """
-    A class that represents a deduplication graph for interest groups.
-    It extends the NetworkX Graph class to provide additional functionality
-    for deduplication tasks.
-    """
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    def add_interest_group(self, name: str, doc: int):
-        """
-        Add an interest group to the graph.
-
-        Args:
-            name (str): The name of the interest group.
-            id (int): The ID of the interest group.
-        """
-        normalized_name = normalize_interest_group_name(name)
-
-        # Add the interest group to the graph
-        if normalized_name not in self.nodes:
-            self.add_node(normalized_name, docs={doc:name}, type_='amicus')
-        elif doc not in self.nodes[normalized_name]['docs']:
-            self.nodes[normalized_name]['docs'][doc] = name
-        else:
-            logging.warning(f"Interest group {normalized_name} ({name}) already exists in document {doc}.")
-
-        return normalized_name
-
-    def add_docket(self, docket: str, doc: int):
-        """
-        Add a docket to the graph.
-
-        Args:
-            docket (str): The docket number, in "YY-NNNN" format.
-        """
-        assert re.match(r'^\d{2}-\d+$', docket), f"Docket {docket} does not match the required format 'YY-NNNN'"
-
-        if docket in self.nodes:
-            assert self.nodes[docket]['type_'] == 'docket' # should only be false in the weird case that an amicus has a name that looks like a docket.
-            self.nodes[docket]["docs"].add(doc)
-        else:
-            self.add_node(docket, type_='docket', docs=set([doc]))
-
-        return docket
-
-    def add_position(self, name: str, docket: str, pos: str):
-        """
-        Add an amicus position on a particular docket.
-
-        Args:
-            name (str): The name of the interest group.
-            docket (str): The docket number (in "YY-NNNN" format).
-            pos (str): The position, either "P" for supports petitioner or "R" for supports respondent.
-
-        Raises:
-            ValueError: If the interest group or docket doesn't exist in the graph.
-            ValueError: If the position is not "P" or "R".
-        """
-        normalized_name = normalize_interest_group_name(name)
-
-        assert re.match(r'^\d{2}-\d+$', docket), f"Docket {docket} does not match the required format 'YY-NNNN'"
-        
-        # Check that nodes exist
-        if normalized_name not in self.nodes:
-            raise ValueError(f"Interest group {name} not found in graph.")
-        if docket not in self.nodes:
-            raise ValueError(f"Docket {docket} not found in graph.")
-
-        # Make sure that the docket's "doc" value is in the amicus's "docs" dictionary keys
-        if len(self.nodes[docket]["docs"].intersection(set(self.nodes[normalized_name]["docs"]))) == 0:
-            raise ValueError(f"Interest group {name} does not appear in docket {self[docket]}")
-        
-        # Validate position
-        if pos not in ["P", "R"]:
-            raise ValueError(f"Position must be 'P' (petitioner) or 'R' (respondent), got {pos}")
-        
-        # Add the position edge
-        self.add_edge(normalized_name, docket, position=pos, type_='position')
-
-    def add_match(self, name1: str, name2: str, p: float=1.0):
-        """
-        Add a match between two interest groups.
-
-        Args:
-            name1 (str): The name of the first interest group.
-            name2 (str): The name of the second interest group.
-        """
-        normalized_name1 = normalize_interest_group_name(name1)
-        normalized_name2 = normalize_interest_group_name(name2)
-
-        if normalized_name1 == normalized_name2:
-            raise ValueError(f"Cannot add match between identical interest groups: {name1} and {name2}.")
-        elif normalized_name1 not in self.nodes:
-            raise ValueError(f"Interest group {name1} not found in graph.")
-        elif normalized_name2 not in self.nodes:
-            raise ValueError(f"Interest group {name2} not found in graph.")
-
-        u1 = self.nodes[normalized_name1]
-        u2 = self.nodes[normalized_name2]
-
-        docs1 = u1['docs']
-        docs2 = u2['docs']
-
-        # Check if the names are associated with any of the same documents
-        # Since each interest group should only appear once in a given document, there should not be matches
-        # between interest groups that appear in the same document.
-        if any(doc in docs1 for doc in docs2):
-            raise ValueError(f"Interest groups {name1} and {name2} are associated with the same document.")
-        
-        # Add the match to the graph
-        self.add_edge(normalized_name1, normalized_name2, weight=p, type_='match')
-
-    def get_mapping(self) -> dict:
-        """
-        Get a mapping of interest group names to their merged names.
-
-        Returns:
-            dict: A dictionary mapping interest group names to their merged names.
-        """
-        # Add edges between all interest groups that have same normalized name
-        components = list(nx.connected_components(self))
-        mapping = {}
-        for component in components:
-            merged_name = self.merge_interest_groups(component)
-            for name in component:
-                mapping[name] = merged_name
-        return mapping
-
-    def merge_interest_groups(self, component: set) -> str:
-        """
-        Merge interest groups in a connected component. Select the most
-        common name as the merged name, and update the aliases.
-
-        Args:
-            component (set): A set of interest group names in the component.
-
-        Returns:
-            str: The merged name of the interest groups.
-        """
-        names = []
-        docs = {}
-        for u in component:
-            # None of the merged nodes should appear in the same document
-            if any(doc in docs for doc in self.nodes[u]['docs']):
-                raise ValueError(f"Interest groups {u} are associated with the same document.")
-
-            names.extend(self.nodes[u]['docs'].values())
-            docs.update(self.nodes[u]['docs'])
-
-        # Find the name with the smallest average edit distance to all other names
-        merged_name = min(names, key=lambda x: sum(editdistance.eval(x, y) for y in names) / len(names))
-
-        return merged_name
-
-    def join_amici(self, node1: str, node2: str):
-        """
-        Merge two amicus nodes, joining their docs metadata, positions on dockets, and matches to other nodes.
-        
-        Args:
-            node1 (str): The name of the first amicus node to merge.
-            node2 (str): The name of the second amicus node to merge.
-            
-        Returns:
-            str: The name of the surviving node (node1).
-            
-        Raises:
-            ValueError: If either node is not in the graph or not an amicus node.
-            ValueError: If both nodes have positions on the same docket.
-        """
-        # Check if nodes exist and are amicus nodes
-        if node1 not in self.nodes:
-            raise ValueError(f"Node {node1} not found in graph.")
-        if node2 not in self.nodes:
-            raise ValueError(f"Node {node2} not found in graph.")
-        
-        if self.nodes[node1].get('type_') != 'amicus':
-            raise ValueError(f"Node {node1} is not an amicus node.")
-        if self.nodes[node2].get('type_') != 'amicus':
-            raise ValueError(f"Node {node2} is not an amicus node.")
-            
-        # Merge docs metadata
-        for doc, name in self.nodes[node2]['docs'].items():
-            if doc in self.nodes[node1]['docs']:
-                raise ValueError(f"Both nodes appear in document {doc}.")
-            self.nodes[node1]['docs'][doc] = name
-            
-        # Handle edges (positions and matches)
-        for neighbor in list(self.neighbors(node2)):
-            edge_data = self.get_edge_data(node2, neighbor)
-            edge_type = edge_data.get('type_')
-            
-            # If it's a docket position
-            if self.nodes[neighbor].get('type_') == 'docket':
-                if self.has_edge(node1, neighbor):
-                    # Both nodes have positions on the same docket
-                    raise ValueError(f"Both nodes have positions on docket {neighbor}.")
-                # Copy the position edge
-                self.add_edge(node1, neighbor, **edge_data)
-            
-            # If it's a match to another amicus
-            elif edge_type == 'match':
-                if self.has_edge(node1, neighbor):
-                    # Keep the edge with the higher weight
-                    old_weight = self.get_edge_data(node1, neighbor).get('weight', 0)
-                    new_weight = edge_data.get('weight', 0)
-                    if new_weight > old_weight:
-                        self.edges[node1, neighbor].update(edge_data)
-                else:
-                    # Add the match edge
-                    self.add_edge(node1, neighbor, **edge_data)
-        
-        # Remove the second node
-        self.remove_node(node2)
-        
-        return node1
-
-
-
 class DbDeduplicator():
-
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, 
+                 # Blocking parameters
+                 char_ngram_range=(3, 3),
+                 char_max_features=20000,
+                 word_max_features=20000,
+                 char_similarity_threshold=0.6,
+                 word_similarity_threshold=0.6,
+                 top_n_matches=10,
+                 # Prediction parameters
+                 sentence_transformer_model='all-MiniLM-L6-v2',
+                 hbsbm_samples=1000,
+                 hbsbm_wait=1000,
+                 hbsbm_niter=10):
         """
-        Initialize the DbDeduplicator with the path to the database.
+        Initialize the DbDeduplicator with database path and parameters.
 
         Args:
-            db_path (str): The path to the database file.
+            db_path (str): Path to the database file
+            
+            # Blocking parameters
+            char_ngram_range (tuple): n-gram range for character vectorizer
+            char_max_features (int): Maximum features for character vectorizer
+            word_max_features (int): Maximum features for word vectorizer
+            char_similarity_threshold (float): Minimum similarity for character TF-IDF matches
+            word_similarity_threshold (float): Minimum similarity for word TF-IDF matches
+            top_n_matches (int): Number of top matches to consider per entity
+            
+            # Prediction parameters
+            sentence_transformer_model (str): Name of the sentence transformer model
+            hbsbm_samples (int): Number of samples for HBSBM
+            hbsbm_wait (int): Wait iterations for HBSBM equilibration
+            hbsbm_niter (int): Number of iterations for HBSBM
         """
+        # Database parameters
         self.db_path = db_path
+        
+        # Blocking parameters
+        self.char_ngram_range = char_ngram_range
+        self.char_max_features = char_max_features
+        self.word_max_features = word_max_features
+        self.char_similarity_threshold = char_similarity_threshold
+        self.word_similarity_threshold = word_similarity_threshold
+        self.top_n_matches = top_n_matches
+        
+        # Prediction parameters
+        self.sentence_transformer_model = sentence_transformer_model
+        self.hbsbm_samples = hbsbm_samples
+        self.hbsbm_wait = hbsbm_wait
+        self.hbsbm_niter = hbsbm_niter
+        
+        # Initialize objects
         self.conn = sqlite3.connect(db_path)
         self.cursor = self.conn.cursor()
-
         self.dedupe_graph = DedupeGraph()
-        self.load_interest_groups()
-
-        self.conn.close()
         self.blocks = defaultdict(list)
         self.matches = defaultdict(list)
+        self.features_df = None
+        self.st_mini = None
+        self.char_vectorizer = None
+        self.word_vectorizer = None
+        self.embeddings_cache = {}
+        
+        # Load data
+        self.load_interest_groups()
+        self.conn.close()
 
     def load_interest_groups(self):
-        self.cursor.execute("SELECT * FROM amici;")  # Replace with your actual table name
+        # Implementation remains the same
+        self.cursor.execute("SELECT * FROM amici;")
         rows = self.cursor.fetchall()
         docs_to_amici = defaultdict(list)
         for row in rows:
@@ -296,21 +124,17 @@ class DbDeduplicator():
                 self.dedupe_graph.add_position(amicus, docket, position)
 
         return True
-
     
     def blocking(self):
         """
-        Perform blocking on the interest groups to reduce the number of comparisons.
-        Uses TF-IDF vectorization at both character and word levels to find candidate matches.
+        Perform blocking on the interest groups using instance parameters.
         """
-        
-        # Get all normalized interest group names from the graph
         interest_groups = [node for node, data in self.dedupe_graph.nodes(data=True) 
-                        if data.get('type_') == 'amicus']
+                          if data.get('type_') == 'amicus']
         
         if len(interest_groups) == 0:
             logger.warning("No interest groups found in the graph.")
-            return
+            return self.blocks
         
         logger.info(f"Performing blocking on {len(interest_groups)} interest groups")
         
@@ -339,7 +163,7 @@ class DbDeduplicator():
             })
         
         # Define function to find matches using TF-IDF
-        def match_names(names, vectorizer, lowerbound=0.6, n_matches=10):
+        def match_names(names, vectorizer, lowerbound, n_matches):
             """
             Takes a list of names and returns pairs that are similar based on TF-IDF similarity.
             """
@@ -352,7 +176,8 @@ class DbDeduplicator():
             from sparse_dot_topn import sp_matmul_topn
             
             # Get the top n_matches for each name with similarity >= lowerbound
-            matches = sp_matmul_topn(tfidf_matrix, tfidf_matrix.transpose(), top_n=n_matches, threshold=lowerbound, sort=True)
+            matches = sp_matmul_topn(tfidf_matrix, tfidf_matrix.transpose(), 
+                                     top_n=n_matches, threshold=lowerbound, sort=True)
             
             # Convert to DataFrame
             matches_df = get_matches_df(matches, names_array, names_array)
@@ -363,13 +188,13 @@ class DbDeduplicator():
             return matches_df
         
         # Create TF-IDF vectorizers for both blocking and prediction
-        logger.info("Creating TF-IDF vectorizers")
+        logger.info("Creating TF-IDF vectorizers with configured parameters")
         self.char_vectorizer = TfidfVectorizer(
             analyzer='char',
-            ngram_range=(3, 3),
+            ngram_range=self.char_ngram_range,
             strip_accents='unicode',
             lowercase=False,
-            max_features=20000,
+            max_features=self.char_max_features,
             preprocessor=normalize_interest_group_name
         )
         
@@ -377,17 +202,27 @@ class DbDeduplicator():
             analyzer='word',
             strip_accents='unicode',
             lowercase=False,
-            max_features=20000,
+            max_features=self.word_max_features,
             preprocessor=normalize_interest_group_name
         )
         
         # Get matches from both methods
         logger.info("Computing character-level TF-IDF matches")
-        char_matches = match_names(interest_groups, self.char_vectorizer)
+        char_matches = match_names(
+            interest_groups, 
+            self.char_vectorizer, 
+            self.char_similarity_threshold,
+            self.top_n_matches
+        )
         char_matches.rename(columns={'similarity': 'char_similarity'}, inplace=True)
         
         logger.info("Computing word-level TF-IDF matches")
-        word_matches = match_names(interest_groups, self.word_vectorizer)
+        word_matches = match_names(
+            interest_groups, 
+            self.word_vectorizer, 
+            self.word_similarity_threshold,
+            self.top_n_matches
+        )
         word_matches.rename(columns={'similarity': 'word_similarity'}, inplace=True)
         
         # Merge the matches
@@ -419,14 +254,14 @@ class DbDeduplicator():
 
     def predict(self):
         """
-        Predict matches between interest groups using the blocked sets.
+        Predict matches between interest groups using the blocked sets and instance parameters.
         """
         logger.info("Initializing prediction phase with featurization")
         
-        # Initialize SentenceTransformer model - only load once and store as instance variable
+        # Initialize SentenceTransformer model using the configured model name
         try:
-            self.st_mini = SentenceTransformer('all-MiniLM-L6-v2')
-            logger.info("Successfully loaded SentenceTransformer model")
+            self.st_mini = SentenceTransformer(self.sentence_transformer_model)
+            logger.info(f"Successfully loaded SentenceTransformer model: {self.sentence_transformer_model}")
         except Exception as e:
             logger.warning(f"Could not load SentenceTransformer model: {e}")
             logger.warning("Proceeding without sentence encoding features")
@@ -461,9 +296,10 @@ class DbDeduplicator():
                 logger.info(f"Creating character-level TF-IDF vectorizer with {len(all_names)} names")
                 self.char_vectorizer = TfidfVectorizer(
                     analyzer='char',
-                    ngram_range=(3, 3),
+                    ngram_range=self.char_ngram_range,
                     min_df=2,
-                    max_df=0.9
+                    max_df=0.9,
+                    max_features=self.char_max_features
                 )
                 self.char_vectorizer.fit(all_names)
             
@@ -472,7 +308,8 @@ class DbDeduplicator():
                 self.word_vectorizer = TfidfVectorizer(
                     analyzer='word',
                     min_df=2,
-                    max_df=0.9
+                    max_df=0.9,
+                    max_features=self.word_max_features
                 )
                 self.word_vectorizer.fit(all_names)
         
@@ -678,11 +515,11 @@ class DbDeduplicator():
         )
         
         # Equilibrate the HBSBM to improve fit
-        logger.info("Equilibrating the HBSBM model")
-        mcmc_equilibrate(state, wait=1000, mcmc_args=dict(niter=10))
+        logger.info(f"Equilibrating the HBSBM model with wait={self.hbsbm_wait}, niter={self.hbsbm_niter}")
+        mcmc_equilibrate(state, wait=self.hbsbm_wait, mcmc_args=dict(niter=self.hbsbm_niter))
         
         # Sample partitions from the posterior
-        logger.info("Sampling partitions from the posterior distribution")
+        logger.info(f"Sampling {self.hbsbm_samples} partitions from the posterior distribution")
         
         # Get all amicus nodes
         amicus_nodes = [v for v in gt_graph.vertices() if v_type[v] == 'amicus']
@@ -694,7 +531,6 @@ class DbDeduplicator():
         # Matrix to store co-occurrence probabilities
         cooccurrence = np.zeros((n_amici, n_amici))
         
-        n_samples = 1000
         collected_partitions = 0
         
         def collect_partition(s):
@@ -726,11 +562,11 @@ class DbDeduplicator():
                 logger.info(f"Collected {collected_partitions} partitions")
         
         # Sample from the posterior
-        mcmc_equilibrate(state, force_niter=n_samples, mcmc_args=dict(niter=1),
-                        callback=collect_partition)
+        mcmc_equilibrate(state, force_niter=self.hbsbm_samples, mcmc_args=dict(niter=1),
+                         callback=collect_partition)
         
         # Normalize the co-occurrence matrix
-        cooccurrence /= n_samples
+        cooccurrence /= self.hbsbm_samples
         
         # Create a DataFrame with amicus names
         amicus_names = [v_name[v] for v in amicus_nodes]
@@ -750,27 +586,206 @@ class DbDeduplicator():
             lambda row: get_cooccurrence_prob(row['left_norm'], row['right_norm']), 
             axis=1
         )
-
+        
+        # Store the features DataFrame
+        self.features_df = features_df
+        
         return features_df
 
+    def save_features(self, output_path, format='zarr'):
+        """
+        Save the features along with metadata about the parameters used.
+        
+        Args:
+            output_path: Path where to save the features
+            format: Storage format ('zarr' or 'csv')
+        """
+        if self.features_df is None:
+            raise ValueError("No features to save. Run predict() first.")
+        
+        # Create metadata dictionary with all parameters
+        metadata = {
+            'db_path': self.db_path,
+            'blocking_params': {
+                'char_ngram_range': self.char_ngram_range,
+                'char_max_features': self.char_max_features,
+                'word_max_features': self.word_max_features,
+                'char_similarity_threshold': self.char_similarity_threshold,
+                'word_similarity_threshold': self.word_similarity_threshold,
+                'top_n_matches': self.top_n_matches
+            },
+            'prediction_params': {
+                'sentence_transformer_model': self.sentence_transformer_model,
+                'hbsbm_samples': self.hbsbm_samples,
+                'hbsbm_wait': self.hbsbm_wait,
+                'hbsbm_niter': self.hbsbm_niter
+            },
+            'features_shape': self.features_df.shape,
+            'timestamp': pd.Timestamp.now().isoformat()
+        }
+        
+        if format.lower() == 'zarr':
+            import zarr
+            import json
+            
+            # Create Zarr store
+            store = zarr.DirectoryStore(output_path)
+            root = zarr.group(store=store)
+            
+            # Save features as a Zarr array
+            features_group = root.create_group('features')
+            for col in self.features_df.columns:
+                # Special handling for object columns - convert to strings
+                if self.features_df[col].dtype == 'object':
+                    features_group.array(name=col, data=self.features_df[col].astype(str))
+                else:
+                    features_group.array(name=col, data=self.features_df[col])
+            
+            # Save metadata
+            root.attrs['metadata'] = json.dumps(metadata)
+            
+            logger.info(f"Saved features and metadata to Zarr store at {output_path}")
+            
+        elif format.lower() == 'csv':
+            # Save features as CSV
+            self.features_df.to_csv(f"{output_path}.csv", index=False)
+            
+            # Save metadata separately as JSON
+            import json
+            with open(f"{output_path}_metadata.json", 'w') as f:
+                json.dump(metadata, f, indent=2)
+                
+            logger.info(f"Saved features to {output_path}.csv and metadata to {output_path}_metadata.json")
+            
+        else:
+            raise ValueError(f"Unsupported format: {format}. Use 'zarr' or 'csv'.")
     
+    @classmethod
+    def load_features(cls, input_path, format='zarr'):
+        """
+        Load features and metadata from disk and instantiate a DbDeduplicator.
+        
+        Args:
+            input_path: Path to the stored features
+            format: Storage format ('zarr' or 'csv')
+            
+        Returns:
+            (DbDeduplicator, DataFrame): The instantiated deduplicator and features
+        """
+        import json
+        
+        if format.lower() == 'zarr':
+            import zarr
+            
+            # Open Zarr store
+            store = zarr.DirectoryStore(input_path)
+            root = zarr.open(store)
+            
+            # Load metadata
+            metadata = json.loads(root.attrs['metadata'])
+            
+            # Create deduplicator with loaded parameters
+            deduplicator = cls(
+                db_path=metadata['db_path'],
+                char_ngram_range=tuple(metadata['blocking_params']['char_ngram_range']),
+                char_max_features=metadata['blocking_params']['char_max_features'],
+                word_max_features=metadata['blocking_params']['word_max_features'],
+                char_similarity_threshold=metadata['blocking_params']['char_similarity_threshold'],
+                word_similarity_threshold=metadata['blocking_params']['word_similarity_threshold'],
+                top_n_matches=metadata['blocking_params']['top_n_matches'],
+                sentence_transformer_model=metadata['prediction_params']['sentence_transformer_model'],
+                hbsbm_samples=metadata['prediction_params']['hbsbm_samples'],
+                hbsbm_wait=metadata['prediction_params']['hbsbm_wait'],
+                hbsbm_niter=metadata['prediction_params']['hbsbm_niter']
+            )
+            
+            # Load features
+            features_group = root['features']
+            features_dict = {}
+            for col in features_group:
+                features_dict[col] = features_group[col][:]
+            
+            features_df = pd.DataFrame(features_dict)
+            deduplicator.features_df = features_df
+            
+            logger.info(f"Loaded features and metadata from Zarr store at {input_path}")
+            
+        elif format.lower() == 'csv':
+            # Load metadata from JSON
+            with open(f"{input_path}_metadata.json", 'r') as f:
+                metadata = json.load(f)
+            
+            # Create deduplicator with loaded parameters
+            deduplicator = cls(
+                db_path=metadata['db_path'],
+                char_ngram_range=tuple(metadata['blocking_params']['char_ngram_range']),
+                char_max_features=metadata['blocking_params']['char_max_features'],
+                word_max_features=metadata['blocking_params']['word_max_features'],
+                char_similarity_threshold=metadata['blocking_params']['char_similarity_threshold'],
+                word_similarity_threshold=metadata['blocking_params']['word_similarity_threshold'],
+                top_n_matches=metadata['blocking_params']['top_n_matches'],
+                sentence_transformer_model=metadata['prediction_params']['sentence_transformer_model'],
+                hbsbm_samples=metadata['prediction_params']['hbsbm_samples'],
+                hbsbm_wait=metadata['prediction_params']['hbsbm_wait'],
+                hbsbm_niter=metadata['prediction_params']['hbsbm_niter']
+            )
+            
+            # Load features
+            features_df = pd.read_csv(f"{input_path}.csv")
+            deduplicator.features_df = features_df
+            
+            logger.info(f"Loaded features from {input_path}.csv and metadata from {input_path}_metadata.json")
+        
+        else:
+            raise ValueError(f"Unsupported format: {format}. Use 'zarr' or 'csv'.")
+        
+        return deduplicator, features_df
 
 
 if __name__ == "__main__":
-    # Get relative path to the database file
     # Get relative path to the database file
     current_file = Path(__file__)
     project_root = current_file.parent.parent  # Go up two directories
     db_path = project_root / "database" / "supreme_court_docs.db"
     db_path = str(db_path)  # Convert to string for sqlite3.connect
-
-    deduplicator = DbDeduplicator(db_path)
-
+    
+    # Create output directory if it doesn't exist
+    output_dir = project_root / "data"
+    output_dir.mkdir(exist_ok=True)
+    
+    # Initialize deduplicator with parameters
+    deduplicator = DbDeduplicator(
+        db_path=db_path,
+        # You can customize parameters here
+        char_ngram_range=(3, 3),
+        char_max_features=20000,
+        word_max_features=20000,
+        char_similarity_threshold=0.6,
+        word_similarity_threshold=0.6,
+        top_n_matches=10,
+        sentence_transformer_model='all-MiniLM-L6-v2',
+        hbsbm_samples=1000,
+        hbsbm_wait=1000,
+        hbsbm_niter=10
+    )
+    
+    # Run blocking
     blocks = deduplicator.blocking()
-
+    
+    # Run prediction
     features = deduplicator.predict()
-
-    features.to_csv(str(project_root / "data" / "features.csv"))
+    
+    # Save features with metadata
+    zarr_path = output_dir / "dedupe_features"
+    csv_path = output_dir / "features"
+    
+    # Save in both formats for demonstration
+    deduplicator.save_features(str(zarr_path), format='zarr')
+    deduplicator.save_features(str(csv_path), format='csv')
+    
+    # Example of loading back
+    loaded_deduplicator, loaded_features = DbDeduplicator.load_features(str(zarr_path), format='zarr')
+    print(f"Loaded features shape: {loaded_features.shape}")
     
 
         
