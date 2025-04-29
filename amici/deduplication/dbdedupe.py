@@ -769,6 +769,8 @@ if __name__ == "__main__":
     blocks = deduplicator.blocking()
 
     features = deduplicator.predict()
+
+    features.to_csv(str(project_root / "data" / "features.csv"))
     
 
         

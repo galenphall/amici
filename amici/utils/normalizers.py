@@ -26,7 +26,17 @@ def normalize_interest_group_name(name: str) -> str:
 
     # Remove extra whitespace
     name = re.sub(r'\s+', ' ', name).strip()
-    
+
+    # Replace all types of dashes with one dash
+    name = re.sub(r'\s*[-–—]\s*', '-', name)
+    name = re.sub(r'[-–—]', '-', name)
+
+    # Remove commas
+    name = re.sub(r',', '', name)
+
+    # Remove periods
+    name = re.sub(r'\.', '', name)
+
     # Convert to lowercase
     name = name.lower()
 
