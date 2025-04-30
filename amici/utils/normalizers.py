@@ -5,6 +5,8 @@ in the Amici database.
 import re
 from typing import List, Optional
 import editdistance
+import unittest
+from hypothesis import given, strategies as st
 
 def normalize_interest_group_name(name: str) -> str:
     """
@@ -34,9 +36,6 @@ def normalize_interest_group_name(name: str) -> str:
     # Remove commas
     name = re.sub(r',', '', name)
 
-    # Remove periods
-    name = re.sub(r'\.', '', name)
-
     # Convert to lowercase
     name = name.lower()
 
@@ -45,6 +44,45 @@ def normalize_interest_group_name(name: str) -> str:
 
     return name
 
+class TestNormalizeIdempotence(unittest.TestCase):
+    """Test the idempotence property of normalize_interest_group_name function."""
+    
+    @given(st.text())
+    def test_idempotence_property(self, input_string):
+        """
+        Test that f(f(x)) = f(x) for any string input using property-based testing.
+        This will generate hundreds of random strings to test the property.
+        """
+        # Apply function once
+        first_result = normalize_interest_group_name(input_string)
+        
+        # Apply function to the result
+        second_result = normalize_interest_group_name(first_result)
+        
+        # Check that applying the function twice gives the same result as applying it once
+        self.assertEqual(first_result, second_result, 
+                        f"Failed idempotence for '{input_string}'. "
+                        f"First result: '{first_result}', "
+                        f"Second result: '{second_result}'")
+
+    @given(st.text(alphabet=st.characters(
+        whitelist_categories=('Lu', 'Ll'),  # Uppercase and lowercase letters
+        whitelist_characters=' ,.-()' + ''.join(['0123456789'])
+    )))
+    def test_idempotence_with_realistic_names(self, input_string):
+        """
+        Test idempotence with more realistic organization name inputs,
+        containing letters, numbers, spaces, commas, periods, dashes and parentheses.
+        """
+        if input_string.strip():  # Skip empty strings after stripping
+            # Apply function once
+            first_result = normalize_interest_group_name(input_string)
+            
+            # Apply function to the result
+            second_result = normalize_interest_group_name(first_result)
+            
+            # Check that applying the function twice gives the same result
+            self.assertEqual(first_result, second_result)
 
 def shorten_common_terms(name: str) -> str:
     """
@@ -110,3 +148,6 @@ def shorten_common_terms(name: str) -> str:
     name = ' '.join(words)
 
     return name
+
+if __name__ == "__main__":
+    unittest.main()

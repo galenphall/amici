@@ -26,6 +26,226 @@ from amici.utils.normalizers import normalize_interest_group_name, shorten_commo
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+class DedupeGraph(nx.Graph):
+    """
+    A class that represents a deduplication graph for interest groups.
+    It extends the NetworkX Graph class to provide additional functionality
+    for deduplication tasks.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def add_interest_group(self, name: str, doc: int):
+        """
+        Add an interest group to the graph.
+
+        Args:
+            name (str): The name of the interest group.
+            id (int): The ID of the interest group.
+        """
+        normalized_name = normalize_interest_group_name(name)
+
+        # Add the interest group to the graph
+        if normalized_name not in self.nodes:
+            self.add_node(normalized_name, docs={doc:name}, type_='amicus')
+        elif doc not in self.nodes[normalized_name]['docs']:
+            self.nodes[normalized_name]['docs'][doc] = name
+        else:
+            logging.warning(f"Interest group {normalized_name} ({name}) already exists in document {doc}.")
+
+        return normalized_name
+
+    def add_docket(self, docket: str, doc: int):
+        """
+        Add a docket to the graph.
+
+        Args:
+            docket (str): The docket number, in "YY-NNNN" format.
+        """
+        assert re.match(r'^\d{2}-\d+$', docket), f"Docket {docket} does not match the required format 'YY-NNNN'"
+
+        if docket in self.nodes:
+            assert self.nodes[docket]['type_'] == 'docket' # should only be false in the weird case that an amicus has a name that looks like a docket.
+            self.nodes[docket]["docs"].add(doc)
+        else:
+            self.add_node(docket, type_='docket', docs=set([doc]))
+
+        return docket
+
+    def add_position(self, name: str, docket: str, pos: str):
+        """
+        Add an amicus position on a particular docket.
+
+        Args:
+            name (str): The name of the interest group.
+            docket (str): The docket number (in "YY-NNNN" format).
+            pos (str): The position, either "P" for supports petitioner or "R" for supports respondent.
+
+        Raises:
+            ValueError: If the interest group or docket doesn't exist in the graph.
+            ValueError: If the position is not "P" or "R".
+        """
+        normalized_name = normalize_interest_group_name(name)
+
+        assert re.match(r'^\d{2}-\d+$', docket), f"Docket {docket} does not match the required format 'YY-NNNN'"
+        
+        # Check that nodes exist
+        if normalized_name not in self.nodes:
+            raise ValueError(f"Interest group {name} not found in graph.")
+        if docket not in self.nodes:
+            raise ValueError(f"Docket {docket} not found in graph.")
+
+        # Make sure that the docket's "doc" value is in the amicus's "docs" dictionary keys
+        if len(self.nodes[docket]["docs"].intersection(set(self.nodes[normalized_name]["docs"]))) == 0:
+            raise ValueError(f"Interest group {name} does not appear in docket {self[docket]}")
+        
+        # Validate position
+        if pos not in ["P", "R"]:
+            raise ValueError(f"Position must be 'P' (petitioner) or 'R' (respondent), got {pos}")
+        
+        # Add the position edge
+        self.add_edge(normalized_name, docket, position=pos, type_='position')
+
+    def add_match(self, name1: str, name2: str, p: float=1.0):
+        """
+        Add a match between two interest groups.
+
+        Args:
+            name1 (str): The name of the first interest group.
+            name2 (str): The name of the second interest group.
+        """
+        normalized_name1 = normalize_interest_group_name(name1)
+        normalized_name2 = normalize_interest_group_name(name2)
+
+        if normalized_name1 == normalized_name2:
+            raise ValueError(f"Cannot add match between identical interest groups: {name1} and {name2}.")
+        elif normalized_name1 not in self.nodes:
+            raise ValueError(f"Interest group {name1} not found in graph.")
+        elif normalized_name2 not in self.nodes:
+            raise ValueError(f"Interest group {name2} not found in graph.")
+
+        u1 = self.nodes[normalized_name1]
+        u2 = self.nodes[normalized_name2]
+
+        docs1 = u1['docs']
+        docs2 = u2['docs']
+
+        # Check if the names are associated with any of the same documents
+        # Since each interest group should only appear once in a given document, there should not be matches
+        # between interest groups that appear in the same document.
+        if any(doc in docs1 for doc in docs2):
+            raise ValueError(f"Interest groups {name1} and {name2} are associated with the same document.")
+        
+        # Add the match to the graph
+        self.add_edge(normalized_name1, normalized_name2, weight=p, type_='match')
+
+    def get_mapping(self) -> dict:
+        """
+        Get a mapping of interest group names to their merged names.
+
+        Returns:
+            dict: A dictionary mapping interest group names to their merged names.
+        """
+        # Add edges between all interest groups that have same normalized name
+        components = list(nx.connected_components(self))
+        mapping = {}
+        for component in components:
+            merged_name = self.merge_interest_groups(component)
+            for name in component:
+                mapping[name] = merged_name
+        return mapping
+
+    def merge_interest_groups(self, component: set) -> str:
+        """
+        Merge interest groups in a connected component. Select the most
+        common name as the merged name, and update the aliases.
+
+        Args:
+            component (set): A set of interest group names in the component.
+
+        Returns:
+            str: The merged name of the interest groups.
+        """
+        names = []
+        docs = {}
+        for u in component:
+            # None of the merged nodes should appear in the same document
+            if any(doc in docs for doc in self.nodes[u]['docs']):
+                raise ValueError(f"Interest groups {u} are associated with the same document.")
+
+            names.extend(self.nodes[u]['docs'].values())
+            docs.update(self.nodes[u]['docs'])
+
+        # Find the name with the smallest average edit distance to all other names
+        merged_name = min(names, key=lambda x: sum(editdistance.eval(x, y) for y in names) / len(names))
+
+        return merged_name
+
+    def join_amici(self, node1: str, node2: str):
+        """
+        Merge two amicus nodes, joining their docs metadata, positions on dockets, and matches to other nodes.
+        
+        Args:
+            node1 (str): The name of the first amicus node to merge.
+            node2 (str): The name of the second amicus node to merge.
+            
+        Returns:
+            str: The name of the surviving node (node1).
+            
+        Raises:
+            ValueError: If either node is not in the graph or not an amicus node.
+            ValueError: If both nodes have positions on the same docket.
+        """
+        # Check if nodes exist and are amicus nodes
+        if node1 not in self.nodes:
+            raise ValueError(f"Node {node1} not found in graph.")
+        if node2 not in self.nodes:
+            raise ValueError(f"Node {node2} not found in graph.")
+        
+        if self.nodes[node1].get('type_') != 'amicus':
+            raise ValueError(f"Node {node1} is not an amicus node.")
+        if self.nodes[node2].get('type_') != 'amicus':
+            raise ValueError(f"Node {node2} is not an amicus node.")
+            
+        # Merge docs metadata
+        for doc, name in self.nodes[node2]['docs'].items():
+            if doc in self.nodes[node1]['docs']:
+                raise ValueError(f"Both nodes appear in document {doc}.")
+            self.nodes[node1]['docs'][doc] = name
+            
+        # Handle edges (positions and matches)
+        for neighbor in list(self.neighbors(node2)):
+            edge_data = self.get_edge_data(node2, neighbor)
+            edge_type = edge_data.get('type_')
+            
+            # If it's a docket position
+            if self.nodes[neighbor].get('type_') == 'docket':
+                if self.has_edge(node1, neighbor):
+                    # Both nodes have positions on the same docket
+                    raise ValueError(f"Both nodes have positions on docket {neighbor}.")
+                # Copy the position edge
+                self.add_edge(node1, neighbor, **edge_data)
+            
+            # If it's a match to another amicus
+            elif edge_type == 'match':
+                if self.has_edge(node1, neighbor):
+                    # Keep the edge with the higher weight
+                    old_weight = self.get_edge_data(node1, neighbor).get('weight', 0)
+                    new_weight = edge_data.get('weight', 0)
+                    if new_weight > old_weight:
+                        self.edges[node1, neighbor].update(edge_data)
+                else:
+                    # Add the match edge
+                    self.add_edge(node1, neighbor, **edge_data)
+        
+        # Remove the second node
+        self.remove_node(node2)
+        
+        return node1
+
+
+
 class DbDeduplicator():
     def __init__(self, db_path: str, 
                  # Blocking parameters
@@ -627,13 +847,15 @@ class DbDeduplicator():
         if format.lower() == 'zarr':
             import zarr
             import json
+            import os
             
-            # Create Zarr store
-            store = zarr.DirectoryStore(output_path)
-            root = zarr.group(store=store)
+            # Create the directory if it doesn't exist
+            os.makedirs(output_path, exist_ok=True)
             
             # Save features as a Zarr array
-            features_group = root.create_group('features')
+            group = zarr.open(output_path, mode='w')
+            features_group = group.create_group('features')
+            
             for col in self.features_df.columns:
                 # Special handling for object columns - convert to strings
                 if self.features_df[col].dtype == 'object':
@@ -641,8 +863,8 @@ class DbDeduplicator():
                 else:
                     features_group.array(name=col, data=self.features_df[col])
             
-            # Save metadata
-            root.attrs['metadata'] = json.dumps(metadata)
+            # Save metadata as JSON attribute
+            group.attrs['metadata'] = json.dumps(metadata)
             
             logger.info(f"Saved features and metadata to Zarr store at {output_path}")
             
@@ -677,9 +899,8 @@ class DbDeduplicator():
         if format.lower() == 'zarr':
             import zarr
             
-            # Open Zarr store
-            store = zarr.DirectoryStore(input_path)
-            root = zarr.open(store)
+            # Open Zarr store directly
+            root = zarr.open(input_path, mode='r')
             
             # Load metadata
             metadata = json.loads(root.attrs['metadata'])
@@ -780,15 +1001,14 @@ if __name__ == "__main__":
     csv_path = output_dir / "features"
     
     # Save in both formats for demonstration
-    deduplicator.save_features(str(zarr_path), format='zarr')
     deduplicator.save_features(str(csv_path), format='csv')
+    deduplicator.save_features(str(zarr_path), format='zarr')
     
     # Example of loading back
     loaded_deduplicator, loaded_features = DbDeduplicator.load_features(str(zarr_path), format='zarr')
     print(f"Loaded features shape: {loaded_features.shape}")
-    
-
-        
 
 
-    
+
+
+
