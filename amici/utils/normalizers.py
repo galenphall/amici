@@ -145,7 +145,7 @@ class TestNormalizeIdempotence(unittest.TestCase):
 
 
     @given(st.lists(
-        st.sampled_from(list(shorten_common_terms.__globals__['common_terms'].keys())), 
+        st.sampled_from(list(common_terms.keys())), 
         min_size=0, max_size=5
     ).map(lambda terms: " ".join(["The"] + terms + ["Organization"])))
     def test_abbreviation_idempotence(self, test_string):
@@ -163,10 +163,10 @@ class TestNormalizeIdempotence(unittest.TestCase):
                          f"Second result: '{second_result}'")
         
         # Verify that some shortening actually occurred (if terms were present)
-        if any(term in test_string.lower() for term in shorten_common_terms.__globals__['common_terms']):
+        if any(term in test_string.lower() for term in common_terms):
             # Check that at least one abbreviation is present in the result
             has_abbrev = any(abbr+'.' in first_result 
-                             for abbr in shorten_common_terms.__globals__['common_terms'].values())
+                             for abbr in common_terms.values())
             self.assertTrue(has_abbrev, f"No abbreviations found in '{first_result}'")
 
 if __name__ == "__main__":
