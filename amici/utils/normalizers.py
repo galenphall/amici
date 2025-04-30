@@ -8,6 +8,23 @@ import editdistance
 import unittest
 from hypothesis import given, strategies as st
 
+# Define common terms to shorten
+common_terms = {
+    'association': 'assn',
+    'committee': 'comm',
+    'foundation': 'fdn',
+    'institute': 'inst',
+    'organization': 'org',
+    'society': 'soc',
+    'federation': 'fed',
+    'international': 'intl',
+    'national': 'natl',
+    'chapter': 'ch',
+    'division': 'div',
+    'group': 'grp',
+    'center': 'ctr'
+}
+
 def normalize_interest_group_name(name: str) -> str:
     """
     Normalize the name of an interest group by removing common prefixes
@@ -21,7 +38,7 @@ def normalize_interest_group_name(name: str) -> str:
     """
     # Remove common prefixes and suffixes
     name = re.sub(r'^(?:the|a|an)\s+', '', name, flags=re.IGNORECASE)
-    name = re.sub(r'\s+(?:inc|llc|corp|ltd|plc|gmbh|ag|sa)\b', '', name, flags=re.IGNORECASE)
+    name = re.sub(r'\s+(?:inc|llc|corp|ltd|plc|gmbh|ag|sa)\.?\b', '', name, flags=re.IGNORECASE)
 
     # Remove acronyms in parentheses appearing at the end of the name
     name = re.sub(r'\s*\([A-Z]{2,}\)\s*$', '', name)
@@ -29,9 +46,11 @@ def normalize_interest_group_name(name: str) -> str:
     # Remove extra whitespace
     name = re.sub(r'\s+', ' ', name).strip()
 
-    # Replace all types of dashes with one dash
-    name = re.sub(r'\s*[-–—]\s*', '-', name)
-    name = re.sub(r'[-–—]', '-', name)
+    # Replace all types of dashes with one dash and condense consecutive dashes
+    name = re.sub(r'\s*[-–—]+\s*', '-', name)
+
+    # Remove apostrophes
+    name = re.sub(r"'", '', name)
 
     # Remove commas
     name = re.sub(r',', '', name)
@@ -44,46 +63,6 @@ def normalize_interest_group_name(name: str) -> str:
 
     return name
 
-class TestNormalizeIdempotence(unittest.TestCase):
-    """Test the idempotence property of normalize_interest_group_name function."""
-    
-    @given(st.text())
-    def test_idempotence_property(self, input_string):
-        """
-        Test that f(f(x)) = f(x) for any string input using property-based testing.
-        This will generate hundreds of random strings to test the property.
-        """
-        # Apply function once
-        first_result = normalize_interest_group_name(input_string)
-        
-        # Apply function to the result
-        second_result = normalize_interest_group_name(first_result)
-        
-        # Check that applying the function twice gives the same result as applying it once
-        self.assertEqual(first_result, second_result, 
-                        f"Failed idempotence for '{input_string}'. "
-                        f"First result: '{first_result}', "
-                        f"Second result: '{second_result}'")
-
-    @given(st.text(alphabet=st.characters(
-        whitelist_categories=('Lu', 'Ll'),  # Uppercase and lowercase letters
-        whitelist_characters=' ,.-()' + ''.join(['0123456789'])
-    )))
-    def test_idempotence_with_realistic_names(self, input_string):
-        """
-        Test idempotence with more realistic organization name inputs,
-        containing letters, numbers, spaces, commas, periods, dashes and parentheses.
-        """
-        if input_string.strip():  # Skip empty strings after stripping
-            # Apply function once
-            first_result = normalize_interest_group_name(input_string)
-            
-            # Apply function to the result
-            second_result = normalize_interest_group_name(first_result)
-            
-            # Check that applying the function twice gives the same result
-            self.assertEqual(first_result, second_result)
-
 def shorten_common_terms(name: str) -> str:
     """
     Shorten common terms in the name of an interest group.
@@ -94,31 +73,6 @@ def shorten_common_terms(name: str) -> str:
     Returns:
         str: The shortened name.
     """
-    # Define common terms to shorten
-    common_terms = {
-        'association': 'assn',
-        'committee': 'comm',
-        'foundation': 'fdn',
-        'institute': 'inst',
-        'organization': 'org',
-        'society': 'soc',
-        'federation': 'fed',
-        'international': 'intl',
-        'national': 'natl',
-        'state': 'st',
-        'local': 'loc',
-        'chapter': 'ch',
-        'division': 'div',
-        'group': 'grp',
-        'alliance': 'all',
-        'coalition': 'co',
-        'network': 'net',
-        'task force': 'tf',
-        'working group': 'wg',
-        'council': 'coun',
-        'american': 'am',
-        'center': 'ctr'
-    }
 
     # Shorten common terms
     for term, abbreviation in common_terms.items():
@@ -148,6 +102,72 @@ def shorten_common_terms(name: str) -> str:
     name = ' '.join(words)
 
     return name
+
+class TestNormalizeIdempotence(unittest.TestCase):
+    """Test the idempotence property of normalize_interest_group_name function."""
+    
+    @given(st.text())
+    def test_idempotence_property(self, input_string):
+        """
+        Test that f(f(x)) = f(x) for any string input using property-based testing.
+        This will generate hundreds of random strings to test the property.
+        """
+        # Apply function once
+        first_result = normalize_interest_group_name(input_string)
+        
+        # Apply function to the result
+        second_result = normalize_interest_group_name(first_result)
+        
+        # Check that applying the function twice gives the same result as applying it once
+        self.assertEqual(first_result, second_result, 
+                        f"Failed idempotence for '{input_string}'. "
+                        f"First result: '{first_result}', "
+                        f"Second result: '{second_result}'")
+
+    @given(st.text(alphabet=st.characters(
+        whitelist_categories=('Lu', 'Ll'),  # Uppercase and lowercase letters
+        whitelist_characters=" ,.-—–()'" + ''.join(['0123456789'])
+    )))
+    def test_idempotence_with_realistic_names(self, input_string):
+        """
+        Test idempotence with more realistic organization name inputs,
+        containing letters, numbers, spaces, commas, periods, dashes and parentheses.
+        """
+        if input_string.strip():  # Skip empty strings after stripping
+            # Apply function once
+            first_result = normalize_interest_group_name(input_string)
+            
+            # Apply function to the result
+            second_result = normalize_interest_group_name(first_result)
+            
+            # Check that applying the function twice gives the same result
+            self.assertEqual(first_result, second_result)
+
+
+    @given(st.lists(
+        st.sampled_from(list(shorten_common_terms.__globals__['common_terms'].keys())), 
+        min_size=0, max_size=5
+    ).map(lambda terms: " ".join(["The"] + terms + ["Organization"])))
+    def test_abbreviation_idempotence(self, test_string):
+        """Test that abbreviation shortening is idempotent using Hypothesis."""
+        # First normalization
+        first_result = normalize_interest_group_name(test_string)
+        
+        # Second normalization should be identical
+        second_result = normalize_interest_group_name(first_result)
+        
+        # Check idempotence
+        self.assertEqual(first_result, second_result, 
+                         f"Failed idempotence for '{test_string}'. "
+                         f"First result: '{first_result}', "
+                         f"Second result: '{second_result}'")
+        
+        # Verify that some shortening actually occurred (if terms were present)
+        if any(term in test_string.lower() for term in shorten_common_terms.__globals__['common_terms']):
+            # Check that at least one abbreviation is present in the result
+            has_abbrev = any(abbr+'.' in first_result 
+                             for abbr in shorten_common_terms.__globals__['common_terms'].values())
+            self.assertTrue(has_abbrev, f"No abbreviations found in '{first_result}'")
 
 if __name__ == "__main__":
     unittest.main()
