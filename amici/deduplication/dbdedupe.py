@@ -857,11 +857,17 @@ class DbDeduplicator():
             features_group = group.create_group('features')
             
             for col in self.features_df.columns:
+                data = self.features_df[col]
                 # Special handling for object columns - convert to strings
-                if self.features_df[col].dtype == 'object':
-                    features_group.array(name=col, data=self.features_df[col].astype(str))
+                if data.dtype == 'object':
+                    string_data = data.astype(str)
+                    features_group.create_dataset(name=col, data=string_data, 
+                                                shape=string_data.shape, 
+                                                dtype=string_data.dtype)
                 else:
-                    features_group.array(name=col, data=self.features_df[col])
+                    features_group.create_dataset(name=col, data=data, 
+                                                shape=data.shape, 
+                                                dtype=data.dtype)
             
             # Save metadata as JSON attribute
             group.attrs['metadata'] = json.dumps(metadata)
@@ -1003,7 +1009,7 @@ if __name__ == "__main__":
     # Save in both formats for demonstration
     deduplicator.save_features(str(csv_path), format='csv')
     deduplicator.save_features(str(zarr_path), format='zarr')
-    
+
     # Example of loading back
     loaded_deduplicator, loaded_features = DbDeduplicator.load_features(str(zarr_path), format='zarr')
     print(f"Loaded features shape: {loaded_features.shape}")
