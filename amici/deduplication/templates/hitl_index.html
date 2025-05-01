@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Deduplication Review</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/css/bootstrap.min.css">
+    <style>
+        .card {
+            margin-bottom: 20px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            transition: opacity 0.3s, transform 0.3s;
+        }
+        .card-header {
+            background-color: #f8f9fa;
+            font-weight: bold;
+        }
+        .card.processing {
+            opacity: 0.7;
+        }
+        .card.fade-out {
+            opacity: 0;
+            transform: translateX(20px);
+        }
+        .name-variant {
+            margin: 5px 0;
+            padding: 8px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+        }
+        #statistics {
+            margin-bottom: 20px;
+        }
+        .btn-match {
+            background-color: #28a745;
+            color: white;
+        }
+        .btn-non-match {
+            background-color: #dc3545;
+            color: white;
+        }
+        .probability-bar {
+            height: 10px;
+            margin: 10px 0;
+            background-color: #e9ecef;
+            border-radius: 5px;
+        }
+        .probability-fill {
+            height: 100%;
+            background-color: #007bff;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-4">
+        <h1>Deduplication Review</h1>
+        
+        <div id="statistics" class="card">
+            <div class="card-header">Statistics</div>
+            <div class="card-body" id="statistics-content">
+                Loading statistics...
+            </div>
+        </div>
+        
+        <div id="sampling-strategy" class="card mt-3">
+            <div class="card-header">Sampling Strategy</div>
+            <div class="card-body">
+                <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="uncertainty-toggle" checked>
+                    <label class="form-check-label" for="uncertainty-toggle">
+                        Uncertainty Sampling
+                    </label>
+                </div>
+                <p class="mt-2">
+                    <small class="text-muted">
+                        Uncertainty sampling prioritizes pairs the model is uncertain about (near 50% confidence).
+                        This helps the model learn more efficiently.
+                    </small>
+                </p>
+                <div id="sampling-stats" class="mt-3">
+                    <div class="spinner-border spinner-border-sm" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    Loading sampling statistics...
+                </div>
+            </div>
+        </div>
+        
+        <div id="review-container">
+            <div id="loading">Loading candidate pairs...</div>
+            <div id="pairs-container"></div>
+        </div>
+        
+        <button id="save-btn" class="btn btn-primary mt-3">Save Progress</button>
+
+        <div class="mb-5" style="height: 80px;"></div>
+        <div id="bottom-nav" class="fixed-bottom bg-light text-center py-2">
+            <small>Powered by AMICI</small>
+    </div>
+    
+    <script>
+        // JavaScript to fetch and display candidates, handle decisions
+        document.addEventListener('DOMContentLoaded', function() {
+            loadStatistics();
+            loadBatch();
+            loadSamplingStats();
+            
+            document.getElementById('save-btn').addEventListener('click', function() {
+                saveState();
+            });
+            
+            document.getElementById('uncertainty-toggle').addEventListener('change', function() {
+                toggleSamplingStrategy(this.checked);
+            });
+        });
+        
+        function loadStatistics() {
+            fetch('/api/statistics')
+                .then(response => response.json())
+                .then(data => {
+                    const statsHtml = `
+                        <p>Total candidate pairs: ${data.total_candidate_pairs}</p>
+                        <p>Reviewed pairs: ${data.reviewed_pairs} (${data.match_count} matches, ${data.non_match_count} non-matches)</p>
+                        <p>Model status: ${data.model_trained ? 'Trained' : 'Not trained'}</p>
+                    `;
+                    document.getElementById('statistics-content').innerHTML = statsHtml;
+                });
+        }
+        
+        function loadBatch() {
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('pairs-container').innerHTML = '';
+            
+            fetch('/api/get_batch')
+                .then(response => response.json())
+                .then(batch => {
+                    document.getElementById('loading').style.display = 'none';
+                    
+                    if (batch.length === 0) {
+                        document.getElementById('pairs-container').innerHTML = 
+                            '<div class="alert alert-info">No more pairs to review!</div>';
+                        return;
+                    }
+                    
+                    batch.forEach(pair => renderPair(pair));
+                });
+        }
+        
+        function renderPair(pair) {
+            const container = document.createElement('div');
+            container.className = 'card';
+            container.dataset.left = pair.left_norm;
+            container.dataset.right = pair.right_norm;
+            
+            // Format probability as percentage
+            const probability = Math.round(pair.match_probability * 100);
+            
+            container.innerHTML = `
+                <div class="card-header">
+                    Candidate Pair (${probability}% match probability)
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h5>Entity 1</h5>
+                            ${pair.left_names.map(name => `<div class="name-variant">${name}</div>`).join('')}
+                        </div>
+                        <div class="col-md-6">
+                            <h5>Entity 2</h5>
+                            ${pair.right_names.map(name => `<div class="name-variant">${name}</div>`).join('')}
+                        </div>
+                    </div>
+                    
+                    <div class="probability-bar">
+                        <div class="probability-fill" style="width: ${probability}%"></div>
+                    </div>
+                    
+                    <div class="text-center mt-3">
+                        <button class="btn btn-match me-2" onclick="recordDecision('${pair.left_norm}', '${pair.right_norm}', true)">
+                            Match ✓
+                        </button>
+                        <button class="btn btn-non-match" onclick="recordDecision('${pair.left_norm}', '${pair.right_norm}', false)">
+                            Not a Match ✗
+                        </button>
+                    </div>
+                </div>
+            `;
+            
+            document.getElementById('pairs-container').appendChild(container);
+        }
+        
+        function recordDecision(left, right, isMatch) {
+            // Find the card and show processing state
+            const cards = document.querySelectorAll('#pairs-container .card');
+            let targetCard = null;
+            
+            for (let card of cards) {
+                if (card.dataset.left === left && card.dataset.right === right) {
+                    targetCard = card;
+                    // Add processing class to show the card is being updated
+                    targetCard.classList.add('processing');
+                    // Disable buttons
+                    const buttons = targetCard.querySelectorAll('button');
+                    buttons.forEach(btn => btn.disabled = true);
+                    break;
+                }
+            }
+            
+            fetch('/api/record_decision', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    left_norm: left,
+                    right_norm: right,
+                    is_match: isMatch
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Add a fade-out animation
+                    if (targetCard) {
+                        targetCard.classList.add('fade-out');
+                        setTimeout(() => {
+                            targetCard.remove();
+                            
+                            // If no more cards, load a new batch
+                            if (document.getElementById('pairs-container').children.length === 0) {
+                                loadBatch();
+                            }
+                        }, 300); // Match this to the CSS transition time
+                    }
+                    
+                    // Reload statistics
+                    loadStatistics();
+                } else {
+                    // Remove processing state
+                    if (targetCard) {
+                        targetCard.classList.remove('processing');
+                        const buttons = targetCard.querySelectorAll('button');
+                        buttons.forEach(btn => btn.disabled = false);
+                    }
+                    alert('Error recording decision.');
+                }
+            })
+            .catch(error => {
+                // Handle fetch errors
+                if (targetCard) {
+                    targetCard.classList.remove('processing');
+                    const buttons = targetCard.querySelectorAll('button');
+                    buttons.forEach(btn => btn.disabled = false);
+                }
+                alert('Network error occurred.');
+            });
+        }
+        
+        function saveState() {
+            fetch('/api/save_state', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    path: 'hitl_state.pkl'
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Progress saved successfully!');
+                } else {
+                    alert('Error saving progress.');
+                }
+            });
+        }
+        
+        function loadSamplingStats() {
+            fetch('/api/sampling_stats')
+                .then(response => response.json())
+                .then(data => {
+                    // Update toggle state without triggering change event
+                    document.getElementById('uncertainty-toggle').checked = data.uncertainty_sampling;
+                    
+                    // Display stats
+                    let statsHtml = '';
+                    if (data.stats.strategy === 'uncertainty sampling') {
+                        statsHtml = `
+                            <p>Strategy: <strong>Uncertainty Sampling</strong></p>
+                            <p>Average uncertainty: ${(data.stats.avg_uncertainty * 100).toFixed(1)}%</p>
+                            <p>Average match probability: ${(data.stats.avg_probability * 100).toFixed(1)}%</p>
+                        `;
+                    } else if (data.stats.strategy === 'probability sampling') {
+                        statsHtml = `
+                            <p>Strategy: <strong>Probability Sampling</strong></p>
+                            <p>Average match probability: ${(data.stats.avg_probability * 100).toFixed(1)}%</p>
+                        `;
+                    } else {
+                        statsHtml = `
+                            <p>Strategy: <strong>${data.stats.strategy}</strong></p>
+                            <p>Using similarity metrics for prioritization until model is trained.</p>
+                        `;
+                    }
+                    
+                    document.getElementById('sampling-stats').innerHTML = statsHtml;
+                });
+        }
+        
+        function toggleSamplingStrategy(enable) {
+            fetch('/api/toggle_sampling', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    enable: enable
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                // Refresh the batch to show newly prioritized pairs
+                loadBatch();
+                // Update stats
+                loadSamplingStats();
+            });
+        }
+    </script>
+</body>
+</html>

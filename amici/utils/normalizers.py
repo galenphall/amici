@@ -19,7 +19,6 @@ common_terms = {
     'federation': 'fed',
     'international': 'intl',
     'national': 'natl',
-    'chapter': 'ch',
     'division': 'div',
     'group': 'grp',
     'center': 'ctr'
@@ -38,7 +37,7 @@ def normalize_interest_group_name(name: str) -> str:
     """
     # Remove common prefixes and suffixes
     name = re.sub(r'^(?:the|a|an)\s+', '', name, flags=re.IGNORECASE)
-    name = re.sub(r'\s+(?:inc|llc|corp|ltd|plc|gmbh|ag|sa)\.?\b', '', name, flags=re.IGNORECASE)
+    name = re.sub(r'\s+(?:inc|llc|corp|ltd|plc|gmbh|ag|sa)\.?(?:\b|$)', '', name, flags=re.IGNORECASE)
 
     # Remove acronyms in parentheses appearing at the end of the name
     name = re.sub(r'\s*\([A-Z]{2,}\)\s*$', '', name)
@@ -76,7 +75,7 @@ def shorten_common_terms(name: str) -> str:
 
     # Shorten common terms
     for term, abbreviation in common_terms.items():
-        name = re.sub(r'\b' + term + r'\b', abbreviation + '.', name, flags=re.IGNORECASE)
+        name = re.sub(r'\b' + term + r'\b', abbreviation, name, flags=re.IGNORECASE)
 
     # Handle misspellings using editdistance package    
     def edit_distance_at_most_one(s1, s2):
@@ -97,7 +96,7 @@ def shorten_common_terms(name: str) -> str:
             # Skip multi-word terms and exact matches (already handled)
             if ' ' not in term and word.lower() != term.lower():  
                 if edit_distance_at_most_one(word.lower(), term.lower()):
-                    words[i] = abbreviation + '.'
+                    words[i] = abbreviation
                     break
     name = ' '.join(words)
 
@@ -165,7 +164,7 @@ class TestNormalizeIdempotence(unittest.TestCase):
         # Verify that some shortening actually occurred (if terms were present)
         if any(term in test_string.lower() for term in common_terms):
             # Check that at least one abbreviation is present in the result
-            has_abbrev = any(abbr+'.' in first_result 
+            has_abbrev = any(abbr in first_result 
                              for abbr in common_terms.values())
             self.assertTrue(has_abbrev, f"No abbreviations found in '{first_result}'")
 

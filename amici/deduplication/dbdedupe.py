@@ -22,231 +22,14 @@ import graph_tool.inference as gt_inf
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
 from amici.utils.normalizers import normalize_interest_group_name, shorten_common_terms
+from amici.deduplication.dedupe_graph import DedupeGraph
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class DedupeGraph(nx.Graph):
-    """
-    A class that represents a deduplication graph for interest groups.
-    It extends the NetworkX Graph class to provide additional functionality
-    for deduplication tasks.
-    """
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    def add_interest_group(self, name: str, doc: int):
-        """
-        Add an interest group to the graph.
-
-        Args:
-            name (str): The name of the interest group.
-            id (int): The ID of the interest group.
-        """
-        normalized_name = normalize_interest_group_name(name)
-
-        # Add the interest group to the graph
-        if normalized_name not in self.nodes:
-            self.add_node(normalized_name, docs={doc:name}, type_='amicus')
-        elif doc not in self.nodes[normalized_name]['docs']:
-            self.nodes[normalized_name]['docs'][doc] = name
-        else:
-            logging.warning(f"Interest group {normalized_name} ({name}) already exists in document {doc}.")
-
-        return normalized_name
-
-    def add_docket(self, docket: str, doc: int):
-        """
-        Add a docket to the graph.
-
-        Args:
-            docket (str): The docket number, in "YY-NNNN" format.
-        """
-        assert re.match(r'^\d{2}-\d+$', docket), f"Docket {docket} does not match the required format 'YY-NNNN'"
-
-        if docket in self.nodes:
-            assert self.nodes[docket]['type_'] == 'docket' # should only be false in the weird case that an amicus has a name that looks like a docket.
-            self.nodes[docket]["docs"].add(doc)
-        else:
-            self.add_node(docket, type_='docket', docs=set([doc]))
-
-        return docket
-
-    def add_position(self, name: str, docket: str, pos: str):
-        """
-        Add an amicus position on a particular docket.
-
-        Args:
-            name (str): The name of the interest group.
-            docket (str): The docket number (in "YY-NNNN" format).
-            pos (str): The position, either "P" for supports petitioner or "R" for supports respondent.
-
-        Raises:
-            ValueError: If the interest group or docket doesn't exist in the graph.
-            ValueError: If the position is not "P" or "R".
-        """
-        normalized_name = normalize_interest_group_name(name)
-
-        assert re.match(r'^\d{2}-\d+$', docket), f"Docket {docket} does not match the required format 'YY-NNNN'"
-        
-        # Check that nodes exist
-        if normalized_name not in self.nodes:
-            raise ValueError(f"Interest group {name} not found in graph.")
-        if docket not in self.nodes:
-            raise ValueError(f"Docket {docket} not found in graph.")
-
-        # Make sure that the docket's "doc" value is in the amicus's "docs" dictionary keys
-        if len(self.nodes[docket]["docs"].intersection(set(self.nodes[normalized_name]["docs"]))) == 0:
-            raise ValueError(f"Interest group {name} does not appear in docket {self[docket]}")
-        
-        # Validate position
-        if pos not in ["P", "R"]:
-            raise ValueError(f"Position must be 'P' (petitioner) or 'R' (respondent), got {pos}")
-        
-        # Add the position edge
-        self.add_edge(normalized_name, docket, position=pos, type_='position')
-
-    def add_match(self, name1: str, name2: str, p: float=1.0):
-        """
-        Add a match between two interest groups.
-
-        Args:
-            name1 (str): The name of the first interest group.
-            name2 (str): The name of the second interest group.
-        """
-        normalized_name1 = normalize_interest_group_name(name1)
-        normalized_name2 = normalize_interest_group_name(name2)
-
-        if normalized_name1 == normalized_name2:
-            raise ValueError(f"Cannot add match between identical interest groups: {name1} and {name2}.")
-        elif normalized_name1 not in self.nodes:
-            raise ValueError(f"Interest group {name1} not found in graph.")
-        elif normalized_name2 not in self.nodes:
-            raise ValueError(f"Interest group {name2} not found in graph.")
-
-        u1 = self.nodes[normalized_name1]
-        u2 = self.nodes[normalized_name2]
-
-        docs1 = u1['docs']
-        docs2 = u2['docs']
-
-        # Check if the names are associated with any of the same documents
-        # Since each interest group should only appear once in a given document, there should not be matches
-        # between interest groups that appear in the same document.
-        if any(doc in docs1 for doc in docs2):
-            raise ValueError(f"Interest groups {name1} and {name2} are associated with the same document.")
-        
-        # Add the match to the graph
-        self.add_edge(normalized_name1, normalized_name2, weight=p, type_='match')
-
-    def get_mapping(self) -> dict:
-        """
-        Get a mapping of interest group names to their merged names.
-
-        Returns:
-            dict: A dictionary mapping interest group names to their merged names.
-        """
-        # Add edges between all interest groups that have same normalized name
-        components = list(nx.connected_components(self))
-        mapping = {}
-        for component in components:
-            merged_name = self.merge_interest_groups(component)
-            for name in component:
-                mapping[name] = merged_name
-        return mapping
-
-    def merge_interest_groups(self, component: set) -> str:
-        """
-        Merge interest groups in a connected component. Select the most
-        common name as the merged name, and update the aliases.
-
-        Args:
-            component (set): A set of interest group names in the component.
-
-        Returns:
-            str: The merged name of the interest groups.
-        """
-        names = []
-        docs = {}
-        for u in component:
-            # None of the merged nodes should appear in the same document
-            if any(doc in docs for doc in self.nodes[u]['docs']):
-                raise ValueError(f"Interest groups {u} are associated with the same document.")
-
-            names.extend(self.nodes[u]['docs'].values())
-            docs.update(self.nodes[u]['docs'])
-
-        # Find the name with the smallest average edit distance to all other names
-        merged_name = min(names, key=lambda x: sum(editdistance.eval(x, y) for y in names) / len(names))
-
-        return merged_name
-
-    def join_amici(self, node1: str, node2: str):
-        """
-        Merge two amicus nodes, joining their docs metadata, positions on dockets, and matches to other nodes.
-        
-        Args:
-            node1 (str): The name of the first amicus node to merge.
-            node2 (str): The name of the second amicus node to merge.
-            
-        Returns:
-            str: The name of the surviving node (node1).
-            
-        Raises:
-            ValueError: If either node is not in the graph or not an amicus node.
-            ValueError: If both nodes have positions on the same docket.
-        """
-        # Check if nodes exist and are amicus nodes
-        if node1 not in self.nodes:
-            raise ValueError(f"Node {node1} not found in graph.")
-        if node2 not in self.nodes:
-            raise ValueError(f"Node {node2} not found in graph.")
-        
-        if self.nodes[node1].get('type_') != 'amicus':
-            raise ValueError(f"Node {node1} is not an amicus node.")
-        if self.nodes[node2].get('type_') != 'amicus':
-            raise ValueError(f"Node {node2} is not an amicus node.")
-            
-        # Merge docs metadata
-        for doc, name in self.nodes[node2]['docs'].items():
-            if doc in self.nodes[node1]['docs']:
-                raise ValueError(f"Both nodes appear in document {doc}.")
-            self.nodes[node1]['docs'][doc] = name
-            
-        # Handle edges (positions and matches)
-        for neighbor in list(self.neighbors(node2)):
-            edge_data = self.get_edge_data(node2, neighbor)
-            edge_type = edge_data.get('type_')
-            
-            # If it's a docket position
-            if self.nodes[neighbor].get('type_') == 'docket':
-                if self.has_edge(node1, neighbor):
-                    # Both nodes have positions on the same docket
-                    raise ValueError(f"Both nodes have positions on docket {neighbor}.")
-                # Copy the position edge
-                self.add_edge(node1, neighbor, **edge_data)
-            
-            # If it's a match to another amicus
-            elif edge_type == 'match':
-                if self.has_edge(node1, neighbor):
-                    # Keep the edge with the higher weight
-                    old_weight = self.get_edge_data(node1, neighbor).get('weight', 0)
-                    new_weight = edge_data.get('weight', 0)
-                    if new_weight > old_weight:
-                        self.edges[node1, neighbor].update(edge_data)
-                else:
-                    # Add the match edge
-                    self.add_edge(node1, neighbor, **edge_data)
-        
-        # Remove the second node
-        self.remove_node(node2)
-        
-        return node1
-
-
 
 class DbDeduplicator():
+    
     def __init__(self, db_path: str, 
                  # Blocking parameters
                  char_ngram_range=(3, 3),
@@ -300,7 +83,7 @@ class DbDeduplicator():
         # Initialize objects
         self.conn = sqlite3.connect(db_path)
         self.cursor = self.conn.cursor()
-        self.dedupe_graph = DedupeGraph()
+        self.dedupe_graph: DedupeGraph = DedupeGraph()
         self.blocks = defaultdict(list)
         self.matches = defaultdict(list)
         self.features_df = None
@@ -472,7 +255,7 @@ class DbDeduplicator():
         
         return self.blocks
 
-    def predict(self):
+    def compute_similarity_scores(self):
         """
         Predict matches between interest groups using the blocked sets and instance parameters.
         """
@@ -486,31 +269,31 @@ class DbDeduplicator():
             logger.warning(f"Could not load SentenceTransformer model: {e}")
             logger.warning("Proceeding without sentence encoding features")
             self.st_mini = None
-        
-        # Define similarity functions
-        def first_letter_jaccard(a, b):
-            words_a = a.split(" ")
-            words_b = b.split(" ")
 
-            fl_a = {w[0] for w in words_a if len(w) > 0}
-            fl_b = {w[0] for w in words_b if len(w) > 0}
-            
-            if not fl_a or not fl_b:
-                return 0
-            
-            return len(fl_a & fl_b) / len(fl_a | fl_b)
-        
-        # Precompute embeddings for all names
-        self.embeddings_cache = {}
+        # Generate pairs from blocks
+        logger.info("Generating pairs from blocking results")
+        pairs = set()
+        for left, right_candidates in self.blocks.items():
+            for right in right_candidates:
+                # Skip if already processed
+                left, right = sorted([left, right])
+                if ((left, right) in pairs) or left==right:
+                    continue
+
+                # Check that it's a valid link
+                if self.dedupe_graph.check_match_legality(left, right):
+                    # Add to pairs
+                    pairs.add((left, right))
+
+        logger.info(f"Generated {len(pairs)} pairs for featurization")
+
+        all_names = list(set([p[0] for p in pairs] + [p[1] for p in pairs]))
         
         # Use the existing vectorizers if they were created in blocking
         if not hasattr(self, 'char_vectorizer') or not hasattr(self, 'word_vectorizer'):
             # Get all interest group names for fitting vectorizers
             interest_groups = [node for node, data in self.dedupe_graph.nodes(data=True) 
                             if data.get('type_') == 'amicus']
-            all_names = []
-            for group in interest_groups:
-                all_names.extend(self.dedupe_graph.nodes[group]['docs'].values())
             
             if not hasattr(self, 'char_vectorizer'):
                 logger.info(f"Creating character-level TF-IDF vectorizer with {len(all_names)} names")
@@ -534,22 +317,16 @@ class DbDeduplicator():
                 self.word_vectorizer.fit(all_names)
         
         # Precompute embeddings for all raw names if SentenceTransformer is available
+        self.embeddings_cache = {}
+
         if self.st_mini is not None:
             logger.info("Precomputing embeddings for all names")
-            all_raw_names = set()
-            for node in self.blocks.keys():
-                all_raw_names.update(self.dedupe_graph.nodes[node]['docs'].values())
-                
-            for candidates in self.blocks.values():
-                for node in candidates:
-                    all_raw_names.update(self.dedupe_graph.nodes[node]['docs'].values())
             
             # Compute embeddings in batches to improve efficiency
-            batch_size = 32
-            all_raw_names_list = list(all_raw_names)
+            batch_size = 128
             
-            for i in tqdm(range(0, len(all_raw_names_list), batch_size), desc="Computing embeddings"):
-                batch = all_raw_names_list[i:i+batch_size]
+            for i in tqdm(range(0, len(all_names), batch_size), desc="Computing embeddings"):
+                batch = all_names[i:i+batch_size]
                 batch_embeddings = self.st_mini.encode(batch)
                 
                 for j, name in enumerate(batch):
@@ -576,6 +353,19 @@ class DbDeduplicator():
                 # Calculate cosine similarity
                 return np.dot(e_a, e_b) / (np.linalg.norm(e_a) * np.linalg.norm(e_b))
         
+        # Define similarity functions
+        def first_letter_jaccard(a, b):
+            words_a = a.split(" ")
+            words_b = b.split(" ")
+
+            fl_a = {w[0] for w in words_a if len(w) > 0}
+            fl_b = {w[0] for w in words_b if len(w) > 0}
+            
+            if not fl_a or not fl_b:
+                return 0
+            
+            return len(fl_a & fl_b) / len(fl_a | fl_b)
+
         def tfidf_sim(a, b, vectorizer):
             v_a = vectorizer.transform([a])
             v_b = vectorizer.transform([b])
@@ -599,49 +389,23 @@ class DbDeduplicator():
         if self.st_mini is not None:
             methods['sentence_cross_encoding'] = lambda a, b: sentence_cross_encoding(a, b)
         
-        # Generate pairs from blocks
-        logger.info("Generating pairs from blocking results")
-        pairs = []
-        for left, right_candidates in self.blocks.items():
-            for right in right_candidates:
-                # Get the raw names (not normalized) for better feature extraction
-                for doc_left, name_left in self.dedupe_graph.nodes[left]['docs'].items():
-                    for doc_right, name_right in self.dedupe_graph.nodes[right]['docs'].items():
-                        # Add the pair with both raw and normalized names
-                        pairs.append({
-                            'left_norm': left,
-                            'right_norm': right,
-                            'left_raw': name_left,
-                            'right_raw': name_right,
-                            'left_doc': doc_left,
-                            'right_doc': doc_right
-                        })
-        
-        logger.info(f"Generated {len(pairs)} pairs for featurization")
-        
         # Featurize pairs
         def featurize_pairs(pairs_data):
             logger.info("Featurizing pairs")
             results = []
             
-            for i, pair in enumerate(tqdm(pairs_data, desc="Featurizing")):
-                left_raw = pair['left_raw']
-                right_raw = pair['right_raw']
+            for i, (left, right) in tqdm(enumerate(pairs_data), desc="Featurizing", total=len(pairs_data)):
                     
                 # Extract features
                 features = {
-                    'left_norm': pair['left_norm'],
-                    'right_norm': pair['right_norm'],
-                    'left_raw': left_raw,
-                    'right_raw': right_raw,
-                    'left_doc': pair['left_doc'],
-                    'right_doc': pair['right_doc']
+                    'left_norm': left,
+                    'right_norm': right,
                 }
                 
                 # Calculate similarity features
                 for method_name, method_func in methods.items():
                     try:
-                        features[method_name] = method_func(left_raw, right_raw)
+                        features[method_name] = method_func(left, right)
                     except Exception as e:
                         logger.warning(f"Error calculating {method_name} for pair {i}: {e}")
                         features[method_name] = 0
@@ -848,6 +612,7 @@ class DbDeduplicator():
             import zarr
             import json
             import os
+            import numpy as np
             
             # Create the directory if it doesn't exist
             os.makedirs(output_path, exist_ok=True)
@@ -858,16 +623,17 @@ class DbDeduplicator():
             
             for col in self.features_df.columns:
                 data = self.features_df[col]
-                # Special handling for object columns - convert to strings
+                # Special handling for object columns - convert to fixed-length strings
                 if data.dtype == 'object':
-                    string_data = data.astype(str)
-                    features_group.create_dataset(name=col, data=string_data, 
-                                                shape=string_data.shape, 
-                                                dtype=string_data.dtype)
+                    # Convert object to string array with explicit string dtype
+                    string_data = data.astype(str).to_numpy()
+                    # Use a fixed-length string dtype that zarr can handle
+                    max_len = max(len(s) for s in string_data) + 10  # Add some buffer
+                    string_dtype = np.dtype(f'U{max_len}')  # Unicode string with max length
+                    features_group.create_array(name=col, data=string_data, dtype=string_dtype)
                 else:
-                    features_group.create_dataset(name=col, data=data, 
-                                                shape=data.shape, 
-                                                dtype=data.dtype)
+                    # For numeric data, we can create arrays directly
+                    features_group.create_array(name=col, data=data.to_numpy())
             
             # Save metadata as JSON attribute
             group.attrs['metadata'] = json.dumps(metadata)
@@ -933,6 +699,10 @@ class DbDeduplicator():
                 features_dict[col] = features_group[col][:]
             
             features_df = pd.DataFrame(features_dict)
+            sorted_left_right = features_df[['left_norm', 'right_norm']].apply(sorted, axis=1).copy()
+            features_df = features_df[~sorted_left_right.duplicated(keep='first')]
+            features_df = features_df.reset_index(drop=True)
+
             deduplicator.features_df = features_df
             
             logger.info(f"Loaded features and metadata from Zarr store at {input_path}")
@@ -959,6 +729,9 @@ class DbDeduplicator():
             
             # Load features
             features_df = pd.read_csv(f"{input_path}.csv")
+            sorted_left_right = features_df[['left_norm', 'right_norm']].apply(sorted, axis=1).copy()
+            features_df = features_df[~sorted_left_right.duplicated(keep='first')]
+            features_df = features_df.reset_index(drop=True)
             deduplicator.features_df = features_df
             
             logger.info(f"Loaded features from {input_path}.csv and metadata from {input_path}_metadata.json")
@@ -968,51 +741,591 @@ class DbDeduplicator():
         
         return deduplicator, features_df
 
+    def run_hitl_process(self, batch_size=10, host='127.0.0.1', port=5000, load_state=None):
+        """Run a human-in-the-loop deduplication process"""
+        # If we don't have features yet, compute them
+        if self.features_df is None:
+            logger.info("Computing features for candidate pairs")
+            self.blocking()
+            self.compute_similarity_scores()
+        
+        # Initialize HITL manager
+        if load_state:
+            logger.info(f"Loading HITL state from {load_state}")
+            hitl_manager = HITLManager.load_state(load_state, self)
+        else:
+            logger.info("Initializing new HITL process")
+            hitl_manager = HITLManager(self, batch_size=batch_size)
+            hitl_manager.initialize_candidates()
+        
+        # Create and run the GUI
+        gui = HITLGui(hitl_manager, host=host, port=port)
+        gui.run()
+        
+        return hitl_manager
 
-if __name__ == "__main__":
-    # Get relative path to the database file
-    current_file = Path(__file__)
-    project_root = current_file.parent.parent  # Go up two directories
-    db_path = project_root / "database" / "supreme_court_docs.db"
-    db_path = str(db_path)  # Convert to string for sqlite3.connect
-    
-    # Create output directory if it doesn't exist
-    output_dir = project_root / "data"
-    output_dir.mkdir(exist_ok=True)
-    
-    # Initialize deduplicator with parameters
-    deduplicator = DbDeduplicator(
-        db_path=db_path,
-        # You can customize parameters here
-        char_ngram_range=(3, 3),
-        char_max_features=20000,
-        word_max_features=20000,
-        char_similarity_threshold=0.6,
-        word_similarity_threshold=0.6,
-        top_n_matches=10,
-        sentence_transformer_model='all-MiniLM-L6-v2',
-        hbsbm_samples=1000,
-        hbsbm_wait=1000,
-        hbsbm_niter=10
-    )
-    
-    # Run blocking
-    blocks = deduplicator.blocking()
-    
-    # Run prediction
-    features = deduplicator.predict()
-    
-    # Save features with metadata
-    zarr_path = output_dir / "dedupe_features"
-    csv_path = output_dir / "features"
-    
-    # Save in both formats for demonstration
-    deduplicator.save_features(str(csv_path), format='csv')
-    deduplicator.save_features(str(zarr_path), format='zarr')
+    def apply_confirmed_matches(self, output_path=None):
+        """Apply all confirmed matches and generate a mapping file"""
+        # Get the mapping from the DedupeGraph
+        mapping = self.dedupe_graph.get_mapping()
+        
+        # Convert to DataFrame for easier viewing/saving
+        mapping_df = pd.DataFrame(
+            [(original, mapped) for original, mapped in mapping.items()],
+            columns=['original_name', 'mapped_name']
+        )
+        
+        # Save if requested
+        if output_path:
+            mapping_df.to_csv(output_path, index=False)
+            logger.info(f"Saved mapping to {output_path}")
+        
+        return mapping_df
 
-    # Example of loading back
-    loaded_deduplicator, loaded_features = DbDeduplicator.load_features(str(zarr_path), format='zarr')
-    print(f"Loaded features shape: {loaded_features.shape}")
+class HITLManager:
+    """
+    Human-in-the-Loop (HITL) Manager for entity deduplication.
+    
+    This class manages the interactive deduplication process where human reviewers
+    make decisions about candidate duplicate pairs. It handles candidate selection,
+    records human decisions, updates a deduplication graph, and trains a machine
+    learning model to improve candidate selection over time.
+    
+    Attributes:
+        deduplicator (DbDeduplicator): Deduplicator instance with candidate pairs
+        model (ClassifierModel): ML model for predicting matches
+        batch_size (int): Number of candidates to return in each batch
+        labeled_pairs (list): History of human decisions [(left, right, is_match, timestamp)]
+        pending_review (list): Current queue of candidate pairs waiting for review
+        reviewed_pairs (set): Set of pairs that have already been reviewed
+        uncertainty_sampling (bool): Whether to use uncertainty sampling for candidate selection
+    """
+    def __init__(self, deduplicator: DbDeduplicator, model=None, batch_size=10):
+        """
+        Initialize the HITL Manager.
+        
+        Args:
+            deduplicator (DbDeduplicator): Deduplicator instance with candidate pairs
+            model (ClassifierModel, optional): ML model for match prediction. 
+                                              Defaults to a new ClassifierModel.
+            batch_size (int, optional): Number of candidates to return in each batch. 
+                                       Defaults to 10.
+        """
+        self.deduplicator = deduplicator
+        self.model = model or ClassifierModel()
+        self.batch_size = batch_size
+        self.labeled_pairs = []  # (left, right, label, timestamp)
+        self.pending_review = []
+        self.reviewed_pairs = set()  # Track already reviewed pairs
+        self.uncertainty_sampling = False
+        
+    def initialize_candidates(self):
+        """
+        Load candidates from deduplicator if needed and prepare initial candidate queue.
+        
+        This method ensures blocking and similarity score computation have been performed,
+        then initializes the queue of candidates for review.
+        
+        Returns:
+            list: The initial set of candidates for review
+        """
+        if self.deduplicator.features_df is None:
+            self.deduplicator.blocking()
+            self.deduplicator.compute_similarity_scores()
+        
+        # Initialize pending review queue
+        return self._refresh_candidates()
+    
+    def _refresh_candidates(self):
+        """
+        Update candidate pairs with latest model predictions and prioritize them.
+        
+        This method:
+        1. Uses the current model to predict match probabilities (if model is trained)
+        2. Filters out already reviewed pairs
+        3. Sorts candidates based on uncertainty or match probability
+        
+        Returns:
+            list: Updated list of candidate pairs for review
+        """
+        df = self.deduplicator.features_df.copy()
+        # Drop duplicate pairs
+        sorted_left_right = df[['left_norm', 'right_norm']].apply(sorted, axis=1).copy()
+        df = df[~sorted_left_right.duplicated(keep='first')]
+        df = df.reset_index(drop=True)
+
+        if self.model.is_trained:
+            # Use model to predict match probabilities
+            probs = self.model.predict_proba(df)
+            df['match_probability'] = probs
+        else:
+            # Without a trained model, use heuristics
+            df['match_probability'] = df['sentence_cross_encoding']  # Fallback to a heuristic
+            
+        # Filter out already reviewed pairs
+        mask = ~df.apply(lambda x: (x['left_norm'], x['right_norm']) in self.reviewed_pairs, axis=1)
+        candidates = df[mask]
+        
+        # Calculate uncertainty (closer to 0.5 means more uncertain)
+        if self.uncertainty_sampling:
+            candidates['uncertainty'] = 0.5 - abs(candidates['match_probability'] - 0.5)
+            
+            # Combine uncertainty and match probability for ranking
+            # This creates a balance between reviewing uncertain pairs and high-confidence matches
+            candidates['priority_score'] = (
+                candidates['uncertainty'] * 0.7 +  # Emphasize uncertainty
+                candidates['match_probability'] * 0.3  # Still consider likely matches
+            )
+            candidates = candidates.sort_values('priority_score', ascending=False)
+        else:
+            # Traditional sorting by match probability only
+            candidates = candidates.sort_values('match_probability', ascending=False)
+        
+        self.pending_review = candidates.to_dict('records')
+        return self.pending_review
+    
+    def toggle_uncertainty_sampling(self, enable=None):
+        """
+        Toggle between uncertainty-based sampling and match probability-based sampling.
+        
+        When uncertainty sampling is enabled, candidates where the model is more uncertain
+        (probabilities closer to 0.5) are prioritized for review.
+        
+        Args:
+            enable (bool, optional): If provided, explicitly set uncertainty sampling mode. 
+                                     If None, toggle the current setting. Defaults to None.
+            
+        Returns:
+            bool: The current status of uncertainty sampling (True if enabled)
+        """
+        if enable is not None:
+            self.uncertainty_sampling = enable
+        else:
+            self.uncertainty_sampling = not self.uncertainty_sampling
+            
+        # Refresh candidates with the new sampling strategy
+        self._refresh_candidates()
+        return self.uncertainty_sampling
+        
+    def get_sampling_strategy_stats(self):
+        """
+        Get statistics about current candidates based on active sampling strategy.
+        
+        Returns:
+            dict: Statistics about the current candidates and sampling strategy:
+                 - strategy: Current sampling strategy name
+                 - avg_probability: Average match probability for top candidates
+                 - avg_uncertainty: Average uncertainty for top candidates (if using uncertainty sampling)
+        """
+        if not self.pending_review:
+            return {}
+            
+        avg_probability = sum(p.get('match_probability', 0) for p in self.pending_review[:10]) / 10
+        
+        if self.uncertainty_sampling:
+            avg_uncertainty = sum(0.5 - abs(p.get('match_probability', 0) - 0.5) 
+                                for p in self.pending_review[:10]) / 10
+            return {
+                'strategy': 'uncertainty sampling',
+                'avg_uncertainty': avg_uncertainty,
+                'avg_probability': avg_probability
+            }
+        else:
+            return {
+                'strategy': 'probability sampling',
+                'avg_probability': avg_probability
+            }
+    
+    def get_next_batch(self):
+        """
+        Get the next batch of candidate pairs for review.
+        
+        If the pending queue is empty, it will be refreshed first.
+        
+        Returns:
+            list: A batch of candidate pairs up to the configured batch size
+        """
+        if not self.pending_review:
+            self._refresh_candidates()
+            
+        batch = self.pending_review[:self.batch_size]
+        return batch
+    
+    def record_decision(self, left_norm, right_norm, is_match):
+        """
+        Record a human decision and update the deduplication graph.
+        
+        This method:
+        1. Records the human decision
+        2. Updates the graph based on the decision
+        3. Propagates the decision through the graph (e.g., due to transitivity)
+        4. Updates the pending review queue
+        
+        Args:
+            left_norm (str): Normalized name of the first entity
+            right_norm (str): Normalized name of the second entity
+            is_match (bool): True if the pair represents the same entity, False otherwise
+            
+        Returns:
+            bool: True if the decision was successfully recorded, False if there was a conflict
+        """
+        # Record the labeled pair
+        self.labeled_pairs.append((left_norm, right_norm, is_match, pd.Timestamp.now()))
+        self.reviewed_pairs.add((left_norm, right_norm))
+        
+        # Update the graph based on the decision
+        try:
+            updates = self.deduplicator.dedupe_graph.label_match(left_norm, right_norm, is_match)
+            for u, v, b in updates:
+                self.labeled_pairs.append((u, v, b, pd.Timestamp.now()))
+                self.reviewed_pairs.add((u, v))
+        except ValueError as e:
+            # Handle conflicts in the graph (e.g., trying to add a mismatch when a match exists)
+            logger.warning(f"Conflict while updating graph: {e}")
+            return False
+            
+        # Remove the pair from pending review
+        self.pending_review = [p for p in self.pending_review 
+                               if not (p['left_norm'] == left_norm and p['right_norm'] == right_norm)]
+        
+        return True
+    
+    def retrain_model(self, force=False):
+        """
+        Retrain the model with the current labeled data.
+        
+        Args:
+            force (bool, optional): If True, retrain even with few samples. Defaults to False.
+            
+        Returns:
+            bool: True if model was retrained, False otherwise
+        """
+        # Check if we have enough new labeled data to justify retraining
+        if len(self.labeled_pairs) < 10 and not force:
+            logger.info("Not enough new labeled pairs to justify retraining")
+            return False
+            
+        # Prepare training data
+        X_train = []
+        y_train = []
+        
+        for left, right, label, _ in self.labeled_pairs:
+            # Find the corresponding features
+            mask = ((self.deduplicator.features_df['left_norm'] == left) & 
+                    (self.deduplicator.features_df['right_norm'] == right))
+            if mask.any():
+                row = self.deduplicator.features_df[mask].iloc[0]
+                feature_values = [row[col] for col in self.model.feature_columns]
+                X_train.append(feature_values)
+                y_train.append(1 if label else 0)
+        
+        if not X_train:
+            logger.warning("No matching feature rows found for labeled pairs")
+            return False
+            
+        # Train the model
+        self.model.train(X_train, y_train)
+        
+        # Refresh candidates with new model predictions
+        self._refresh_candidates()
+        
+        return True
+    
+    def save_state(self, path):
+        """
+        Save the current state of the HITL process.
+        
+        Saves labeled pairs, reviewed pairs, and the trained model to a pickle file.
+        
+        Args:
+            path (str): Path to save the state file
+        """
+        state = {
+            'labeled_pairs': self.labeled_pairs,
+            'reviewed_pairs': list(self.reviewed_pairs),
+            'model': self.model.save_to_dict() if self.model else None
+        }
+        
+        with open(path, 'wb') as f:
+            import pickle
+            pickle.dump(state, f)
+    
+    @classmethod
+    def load_state(cls, path, deduplicator):
+        """
+        Load a saved HITL state.
+        
+        Args:
+            path (str): Path to the saved state file
+            deduplicator (DbDeduplicator): Deduplicator instance to use with the loaded state
+            
+        Returns:
+            HITLManager: A new HITLManager instance with the loaded state
+        """
+        with open(path, 'rb') as f:
+            import pickle
+            state = pickle.load(f)
+        
+        manager = cls(deduplicator)
+        manager.labeled_pairs = state['labeled_pairs']
+        manager.reviewed_pairs = set(state['reviewed_pairs'])
+        
+        if state['model']:
+            manager.model = ClassifierModel.load_from_dict(state['model'])
+            
+        return manager
+
+class HITLGui:
+    """
+    Basic web GUI for HITL deduplication
+    """
+    
+    def __init__(self, hitl_manager, host='127.0.0.1', port=5000):
+        self.hitl_manager = hitl_manager
+        self.host = host
+        self.port = port
+        self.app = None
+    
+    def _create_app(self):
+        from flask import Flask, render_template, request, jsonify
+        app = Flask(__name__)
+        
+        @app.route('/')
+        def index():
+            return render_template('hitl_index.html')
+
+        @app.route('/api/toggle_sampling', methods=['POST'])
+        def toggle_sampling():
+            enable = request.json.get('enable')
+            active = self.hitl_manager.toggle_uncertainty_sampling(enable)
+            stats = self.hitl_manager.get_sampling_strategy_stats()
+            return jsonify({
+                'uncertainty_sampling': active,
+                'stats': stats
+            })
+
+        @app.route('/api/sampling_stats', methods=['GET'])
+        def sampling_stats():
+            stats = self.hitl_manager.get_sampling_strategy_stats()
+            return jsonify({
+                'uncertainty_sampling': self.hitl_manager.uncertainty_sampling,
+                'stats': stats
+            })
+        
+        @app.route('/api/get_batch', methods=['GET'])
+        def get_batch():
+            batch = self.hitl_manager.get_next_batch()
+            formatted_batch = []
+            
+            for item in batch:
+                left_norm = normalize_interest_group_name(item['left_norm'])
+                right_norm = normalize_interest_group_name(item['right_norm'])
+                
+                # Get original names from the graph
+                left_names = list(self.hitl_manager.deduplicator.dedupe_graph.nodes[left_norm]['docs'].values())
+                right_names = list(self.hitl_manager.deduplicator.dedupe_graph.nodes[right_norm]['docs'].values())
+                
+                formatted_batch.append({
+                    'left_norm': left_norm,
+                    'right_norm': right_norm,
+                    'left_names': left_names,
+                    'right_names': right_names,
+                    'match_probability': item.get('match_probability', 0),
+                    # Include similarity metrics for transparency
+                    'metrics': {
+                        'jaro': item.get('jaro_winkler', 0),
+                        'token_sort': item.get('tokensort', 0),
+                        'levenshtein': item.get('levenstein', 0)
+                    }
+                })
+            
+            return jsonify(formatted_batch)
+        
+        @app.route('/api/record_decision', methods=['POST'])
+        def record_decision():
+            data = request.json
+            left_norm = data.get('left_norm')
+            right_norm = data.get('right_norm')
+            is_match = data.get('is_match')
+            
+            if not all([left_norm, right_norm, is_match is not None]):
+                return jsonify({'success': False, 'error': 'Missing required fields'})
+            
+            success = self.hitl_manager.record_decision(left_norm, right_norm, is_match)
+            
+            # Periodically retrain the model
+            if len(self.hitl_manager.labeled_pairs) % 10 == 0:
+                self.hitl_manager.retrain_model()
+            
+            return jsonify({'success': success})
+        
+        @app.route('/api/statistics', methods=['GET'])
+        def statistics():
+            total_pairs = len(self.hitl_manager.deduplicator.features_df) if self.hitl_manager.deduplicator.features_df is not None else 0
+            labeled_count = len(self.hitl_manager.labeled_pairs)
+            match_count = sum(1 for _, _, is_match, _ in self.hitl_manager.labeled_pairs if is_match)
+            
+            return jsonify({
+                'total_candidate_pairs': total_pairs,
+                'reviewed_pairs': labeled_count,
+                'match_count': match_count,
+                'non_match_count': labeled_count - match_count,
+                'model_trained': self.hitl_manager.model.is_trained
+            })
+        
+        @app.route('/api/save_state', methods=['POST'])
+        def save_state():
+            path = request.json.get('path', 'hitl_state.pkl')
+            self.hitl_manager.save_state(path)
+            return jsonify({'success': True})
+        
+        self.app = app
+        return app
+    
+    def run(self):
+        """Run the web GUI"""
+        if self.app is None:
+            self._create_app()
+            
+        # Ensure we have candidates to review
+        self.hitl_manager.initialize_candidates()
+        
+        # Start the Flask app
+        self.app.run(host=self.host, port=self.port, debug=True)
+
+class ClassifierModel:
+    """Encapsulates the ML model for predicting matches"""
+    
+    def __init__(self, model_type='random_forest', feature_columns=None):
+        self.model_type = model_type
+        self.model = None
+        self.is_trained = False
+        
+        # Default feature columns to use (can be overridden)
+        self.feature_columns = feature_columns or [
+            'ratio', 'partialratio', 'tokensort', 'tokenset', 
+            'levenstein', 'jaro_winkler', 'charsim', 'wordsim',
+            'hbsbm_prob', 'first_letter_jaccard'
+        ]
+    
+    def _initialize_model(self):
+        """Initialize the model based on model_type"""
+        if self.model_type == 'random_forest':
+            from sklearn.ensemble import RandomForestClassifier
+            self.model = RandomForestClassifier(
+                n_estimators=100, 
+                class_weight='balanced',
+                random_state=42
+            )
+        elif self.model_type == 'xgboost':
+            import xgboost as xgb
+            self.model = xgb.XGBClassifier(
+                n_estimators=100,
+                max_depth=3,
+                learning_rate=0.1,
+                scale_pos_weight=2,  # For imbalanced data
+                random_state=42
+            )
+        else:
+            raise ValueError(f"Unsupported model type: {self.model_type}")
+    
+    def train(self, X, y):
+        """Train the model with labeled data"""
+        if self.model is None:
+            self._initialize_model()
+            
+        self.model.fit(X, y)
+        self.is_trained = True
+        
+        # Log feature importances if available
+        if hasattr(self.model, 'feature_importances_'):
+            importances = list(zip(self.feature_columns, self.model.feature_importances_))
+            importances.sort(key=lambda x: x[1], reverse=True)
+            logger.info("Feature importances:")
+            for feature, importance in importances:
+                logger.info(f"  {feature}: {importance:.4f}")
+    
+    def predict_proba(self, features_df):
+        """Predict match probabilities for candidate pairs"""
+        if not self.is_trained:
+            # Return a default score if model is not trained
+            return features_df['sentence_cross_encoder'].values
+            
+        # Extract features from the dataframe
+        X = features_df[self.feature_columns].values
+
+        print(X.shape)
+        
+        # Get positive class probabilities
+        return self.model.predict_proba(X).reshape(-1, 1)
+    
+    def save_to_dict(self):
+        """Save model to a dictionary"""
+        import pickle
+        return {
+            'model_type': self.model_type,
+            'is_trained': self.is_trained,
+            'feature_columns': self.feature_columns,
+            'model_bytes': pickle.dumps(self.model) if self.model else None
+        }
+    
+    @classmethod
+    def load_from_dict(cls, data):
+        """Load model from a dictionary"""
+        import pickle
+        model = cls(
+            model_type=data['model_type'],
+            feature_columns=data['feature_columns']
+        )
+        model.is_trained = data['is_trained']
+        if data['model_bytes']:
+            model.model = pickle.loads(data['model_bytes'])
+        return model
+
+# if __name__ == "__main__":
+#     # Get relative path to the database file
+#     current_file = Path(__file__)
+#     project_root = current_file.parent.parent  # Go up two directories
+#     db_path = project_root / "database" / "supreme_court_docs.db"
+#     db_path = str(db_path)  # Convert to string for sqlite3.connect
+    
+#     # Create output directory if it doesn't exist
+#     output_dir = project_root / "data"
+#     output_dir.mkdir(exist_ok=True)
+    
+#     # Initialize deduplicator with parameters
+#     deduplicator = DbDeduplicator(
+#         db_path=db_path,
+#         # You can customize parameters here
+#         char_ngram_range=(3, 3),
+#         char_max_features=20000,
+#         word_max_features=20000,
+#         char_similarity_threshold=0.6,
+#         word_similarity_threshold=0.6,
+#         top_n_matches=10,
+#         sentence_transformer_model='all-MiniLM-L6-v2',
+#         hbsbm_samples=1000,
+#         hbsbm_wait=1000,
+#         hbsbm_niter=10
+#     )
+    
+#     # Run blocking
+#     blocks = deduplicator.blocking()
+    
+#     # Run prediction
+#     features = deduplicator.compute_similarity_scores()
+    
+#     # Save features with metadata
+#     zarr_path = output_dir / "dedupe_features"
+#     csv_path = output_dir / "features"
+    
+#     # Save in both formats for demonstration
+#     deduplicator.save_features(str(csv_path), format='csv')
+#     deduplicator.save_features(str(zarr_path), format='zarr')
+
+#     # Example of loading back
+#     loaded_deduplicator, loaded_features = DbDeduplicator.load_features(str(zarr_path), format='zarr')
+#     print(f"Loaded features shape: {loaded_features.shape}")
 
 
 
