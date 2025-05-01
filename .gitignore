@@ -14,4 +14,4 @@ amic/data/extracted_entities_linked/*
 *.txt
 *.pdf
 *.json
-
+**/.hypothesis/*
