@@ -1,4 +1,3 @@
-# Example script to run the HITL process
 import sys
 from pathlib import Path
 import logging

@@ -90,7 +90,7 @@ class DedupeGraph(nx.Graph):
         
         # Check that nodes exist
         if normalized_name not in self.nodes:
-            raise ValueError(f"Interest group {name} not found in graph.")
+            raise ValueError(f"Interest group {name} ({normalized_name}) not found in graph.")
         if docket not in self.nodes:
             raise ValueError(f"Docket {docket} not found in graph.")
 

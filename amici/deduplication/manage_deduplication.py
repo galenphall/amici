@@ -1,14 +1,3 @@
-#!/usr/bin/env python3
-"""
-Deduplication Human-in-the-Loop Management Script
-
-This script provides command-line functionality to:
-1. Initialize a new HITL deduplication process
-2. Resume an existing process
-3. Export final mappings
-4. Validate and repair data
-"""
-
 import argparse
 import os
 import logging
@@ -52,7 +41,7 @@ def main():
     args = parser.parse_args()
     
     # Import your modules here to avoid circular imports
-    sys.path.append(str(Path(__file__).parent.parent))
+    sys.path.append(str(Path(__file__).parent.parent.parent))
     from amici.deduplication.dbdedupe import DbDeduplicator, HITLManager
     
     # Initialize deduplicator

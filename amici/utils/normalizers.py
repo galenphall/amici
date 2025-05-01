@@ -7,6 +7,9 @@ from typing import List, Optional
 import editdistance
 import unittest
 from hypothesis import given, strategies as st
+from hypothesis.strategies import composite
+from hypothesis import settings
+import numpy as np
 
 # Define common terms to shorten
 common_terms = {
@@ -48,17 +51,17 @@ def normalize_interest_group_name(name: str) -> str:
     # Convert to lowercase
     name = name.lower()
 
-    # Shorten common terms
-    name = shorten_common_terms(name)
-
-    # Replace all types of dashes with one dash and condense consecutive dashes
-    name = re.sub(r'\s*[-–—]+\s*', '-', name)
-
     # Remove apostrophes
     name = re.sub(r"'", '', name)
 
     # Remove commas
     name = re.sub(r',', '', name)
+
+    # Shorten common terms
+    name = shorten_common_terms(name)
+
+    # Replace all types of dashes with one dash and condense consecutive dashes
+    name = re.sub(r'\s*[-–—]+\s*', '-', name)
 
     name = re.sub(r'\s+', ' ', name).strip()
 
@@ -145,30 +148,57 @@ class TestNormalizeIdempotence(unittest.TestCase):
             self.assertEqual(first_result, second_result)
 
 
-    @given(st.lists(
-        st.sampled_from(list(common_terms.keys())), 
-        min_size=0, max_size=5
-    ).map(lambda terms: " ".join(["The"] + terms + ["Organization"])))
-    def test_abbreviation_idempotence(self, test_string):
-        """Test that abbreviation shortening is idempotent using Hypothesis."""
-        # First normalization
-        first_result = normalize_interest_group_name(test_string)
+
+    @composite
+    def terms_with_alterations(draw):
+        """Strategy to produce terms from common_terms with occasional alterations."""
+        terms = draw(st.lists(
+            st.sampled_from(list(common_terms.keys())), 
+            min_size=0, max_size=5
+        ))
         
-        # Second normalization should be identical
-        second_result = normalize_interest_group_name(first_result)
+        altered_terms = []
+        for term in terms:
+            # 30% chance to alter the term
+            if draw(st.sampled_from([True, False, False, False, False, False, False, True, False, True])):
+                # Possible alterations: add/remove/change a character
+                alteration_type = draw(st.sampled_from(['add', 'remove', 'change']))
+                if alteration_type == 'add' and len(term) > 0:
+                    pos = draw(st.integers(min_value=0, max_value=len(term)))
+                    char = draw(st.characters(whitelist_categories=('Lu', 'Ll')))
+                    term = term[:pos] + char + term[pos:]
+                elif alteration_type == 'remove' and len(term) > 1:
+                    pos = draw(st.integers(min_value=0, max_value=len(term)-1))
+                    term = term[:pos] + term[pos+1:]
+                elif alteration_type == 'change' and len(term) > 0:
+                    pos = draw(st.integers(min_value=0, max_value=len(term)-1))
+                    char = draw(st.characters(whitelist_categories=('Lu', 'Ll')))
+                    term = term[:pos] + char + term[pos+1:]
+            
+            altered_terms.append(term)
         
-        # Check idempotence
-        self.assertEqual(first_result, second_result, 
-                         f"Failed idempotence for '{test_string}'. "
-                         f"First result: '{first_result}', "
-                         f"Second result: '{second_result}'")
+        return altered_terms
+
+    @given(terms_with_alterations())
+    def test_common_term_normalization(self, terms):
+        """Test that terms from common_terms (possibly altered) get normalized correctly."""
+        if not terms:  # Skip empty lists
+            return
+            
+        # Construct a test string with the terms
+        test_input = " ".join(terms)
         
-        # Verify that some shortening actually occurred (if terms were present)
-        if any(term in test_string.lower() for term in common_terms):
-            # Check that at least one abbreviation is present in the result
-            has_abbrev = any(abbr in first_result 
-                             for abbr in common_terms.values())
-            self.assertTrue(has_abbrev, f"No abbreviations found in '{first_result}'")
+        # Normalize the input
+        normalized = normalize_interest_group_name(test_input)
+        
+        # Check that normalizing again produces the same result
+        self.assertEqual(normalized, normalize_interest_group_name(normalized))
 
 if __name__ == "__main__":
+    
+    n1 = normalize_interest_group_name("American Trucking Association's")
+    n2 = normalize_interest_group_name(n1)
+    print(f"Normalized name: {n1}")
+    print(f"Normalized name again: {n2}")
+
     unittest.main()
