@@ -448,10 +448,85 @@ class DbDeduplicator():
         
         # Featurize all pairs
         features_df = featurize_pairs(pairs)
-        
-        # Apply a model (placeholder for your trained model)
-        logger.info("Applying model to predict matches")
 
+        # Add HBSBM co-occurrence probabilities
+        features_df = self.deg_corr_reg_equiv(features_df)
+        
+        # Store the features DataFrame
+        self.features_df = features_df
+        
+        # Save the features after computation
+        self.save_features(self.features_path)
+        
+        return features_df
+
+    def deg_corr_reg_equiv(self, features_df, alpha=0.85):
+        """
+        Compute the degre-corrected regular equivalence for the pairs of nodes in the graph.
+
+        Args:
+            features_df (pd.DataFrame): DataFrame containing pairs and their features
+        Returns:
+            pd.DataFrame: Updated features DataFrame with degree-corrected regular equivalence
+        """
+        # Create a subgraph containing only the amici in the blocks and their connected dockets
+        logger.info("Creating subgraph for DC-reg-eq based on blocked amici")
+        
+        # Extract all amici involved in potential matches
+        blocked_amici = set(self.blocks.keys())
+        for candidates in self.blocks.values():
+            blocked_amici.update(candidates)
+        
+        logger.info(f"Found {len(blocked_amici)} amici involved in potential matches")
+        
+        # Get all dockets connected to these amici
+        connected_dockets = set()
+        for amicus in blocked_amici:
+            for neighbor in self.dedupe_graph.neighbors(amicus):
+                if self.dedupe_graph.nodes[neighbor].get('type_') == 'docket':
+                    connected_dockets.add(neighbor)
+        
+        logger.info(f"Found {len(connected_dockets)} dockets connected to blocked amici")
+        
+        # Create subgraph
+        subgraph_nodes = list(blocked_amici.union(connected_dockets))
+        subgraph = self.dedupe_graph.subgraph(subgraph_nodes)
+
+        A = nx.to_numpy_array(subgraph, nodelist=subgraph_nodes)
+        D = np.diag(A.sum(axis=1))
+        sigma = np.linalg.inv(D - alpha * A)
+        sigma = np.nan_to_num(sigma, nan=0.0)
+        logger.info("Computed degree-corrected regular equivalence matrix")
+
+        # Create a DataFrame with amicus names
+        sigma_df = pd.DataFrame(sigma, index=subgraph_nodes, columns=subgraph_nodes)
+        logger.info("Created DataFrame for degree-corrected regular equivalence")
+
+        # Add DC-reg-eq to features
+        logger.info("Adding DC-reg-eq to features")
+        def get_dc_reg_eq(left, right):
+            if left in sigma_df.index and right in sigma_df.columns:
+                return sigma_df.loc[left, right]
+            return 0.0
+        
+        # Add the DC-reg-eq as a feature
+        features_df['dc_reg_eq'] = features_df.apply(
+            lambda row: get_dc_reg_eq(row['left_norm'], row['right_norm']),
+            axis=1
+        )
+        logger.info("Added DC-reg-eq feature to DataFrame")
+
+        return features_df
+
+    def hbsbm_cooccurrence(self, features_df):
+        """
+        Compute co-occurrence probabilities using HBSBM on the deduplication graph.
+
+        Args:
+            features_df (pd.DataFrame): DataFrame containing pairs and their features
+        Returns:
+            pd.DataFrame: Updated features DataFrame with HBSBM co-occurrence probabilities
+        """
         # Create a subgraph containing only the amici in the blocks and their connected dockets
         logger.info("Creating subgraph for HBSBM based on blocked amici")
         
@@ -474,8 +549,29 @@ class DbDeduplicator():
         # Create subgraph
         subgraph_nodes = blocked_amici.union(connected_dockets)
         subgraph = self.dedupe_graph.subgraph(subgraph_nodes)
+
+        flatgraph = nx.Graph()
+
+        # Split the dockets into R and P types, instead of using edge properties
+        for edge in subgraph.edges(data=True):
+            if edge[2].get('type_') == 'position':
+                # Set the position type based on the edge data
+                position = edge[2].get('position', 'unknown')
+                u, v = edge[0], edge[1]
+                if subgraph.nodes[u].get('type_') == 'amicus' and subgraph.nodes[v].get('type_') == 'docket':
+                    # Add edge to flatgraph with position type
+                    flatgraph.add_edge(u, v + position)
+                    flatgraph.nodes[u]['type_'] = 'amicus'
+                    flatgraph.nodes[v + position]['type_'] = 'docket'
+                elif subgraph.nodes[v].get('type_') == 'amicus' and subgraph.nodes[u].get('type_') == 'docket':
+                    # Add edge to flatgraph with position type
+                    flatgraph.add_edge(v, u + position)
+                    flatgraph.nodes[v]['type_'] = 'amicus'
+                    flatgraph.nodes[u + position]['type_'] = 'docket'
+                else:
+                    continue
         
-        logger.info(f"Created subgraph with {len(subgraph.nodes)} nodes and {len(subgraph.edges)} edges")
+        logger.info(f"Created subgraph with {len(flatgraph.nodes)} nodes and {len(flatgraph.edges)} edges")
         
         # Create a graph-tool graph from the NetworkX subgraph
         logger.info("Creating graph-tool representation for HBSBM")
@@ -494,41 +590,39 @@ class DbDeduplicator():
         
         # First add all nodes
         logger.info("Adding nodes to graph-tool graph")
-        for node, data in subgraph.nodes(data=True):
+        for node, data in flatgraph.nodes(data=True):
             v = gt_graph.add_vertex()
             node_map[node] = v
             v_type[v] = data.get('type_', 'unknown')
             v_name[v] = node
-        
-        # Create edge property for position (P or R)
-        e_position = gt_graph.new_edge_property("string")
-        gt_graph.ep.position = e_position
+
+        # Make an int v_type_int property for the graph-tool graph
+        v_type_int = gt_graph.new_vertex_property("int")
+        gt_graph.vp.type_int = v_type_int
+        for v in gt_graph.vertices():
+            if v_type[v] == 'amicus':
+                v_type_int[v] = 0
+            elif v_type[v] == 'docket':
+                v_type_int[v] = 1
+            else:
+                raise ValueError(f"Unknown node type: {v_type[v]}")
         
         # Add all position edges
         logger.info("Adding position edges to graph-tool graph")
-        for u, v, data in subgraph.edges(data=True):
+        for u, v, data in flatgraph.edges(data=True):
             if data.get('type_') == 'position':
                 e = gt_graph.add_edge(node_map[u], node_map[v])
-                e_position[e] = data.get('position', 'unknown')
         
-        # Create edge property map for categorical position values (P=0, R=1)
-        e_pos_cat = gt_graph.new_edge_property("int")
-        for e in gt_graph.edges():
-            e_pos_cat[e] = 0 if e_position[e] == "P" else 1
-        
-        # Create a LayeredBlockState using the categorical edge property
-        logger.info("Creating LayeredBlockState for HBSBM with categorical edge covariate")
-        state = gt_inf.minimize_nested_blockmodel_dl(
-            gt_graph,
-            state_args=dict(
-                base_type=gt_inf.LayeredBlockState,
-                state_args=dict(ec=e_pos_cat, layers=True)
-            )
-        )
+        # Create a BlockState
+        logger.info("Creating BlockState for HBSBM")
+        state = gt_inf.minimize_nested_blockmodel_dl(gt_graph, state_args=dict(clabel=v_type_int, pclabel=v_type_int))
         
         # Equilibrate the HBSBM to improve fit
-        logger.info(f"Equilibrating the HBSBM model with wait={self.hbsbm_wait}, niter={self.hbsbm_niter}")
-        mcmc_equilibrate(state, wait=self.hbsbm_wait, mcmc_args=dict(niter=self.hbsbm_niter))
+        # logger.info(f"Equilibrating the HBSBM model with wait={self.hbsbm_wait}, niter={self.hbsbm_niter}")
+        # mcmc_equilibrate(state, wait=self.hbsbm_wait, mcmc_args=dict(niter=self.hbsbm_niter))
+        logger.info("Enhancing the HBSBM fit with multiple sweeps")
+        for i in tqdm(range(1000)): # this should be sufficiently large
+            state.multiflip_mcmc_sweep(beta=np.inf, niter=10)
         
         # Sample partitions from the posterior
         logger.info(f"Sampling {self.hbsbm_samples} partitions from the posterior distribution")
@@ -598,16 +692,10 @@ class DbDeduplicator():
             lambda row: get_cooccurrence_prob(row['left_norm'], row['right_norm']), 
             axis=1
         )
-        
-        # Store the features DataFrame
-        self.features_df = features_df
-        
-        # Save the features after computation
-        self.save_features(self.features_path)
-        
+
         return features_df
 
-    def save_features(self, output_path, format='zarr'):
+    def save_features(self, output_path, format='csv'):
         """
         Save the features along with metadata about the parameters used.
         
@@ -638,40 +726,8 @@ class DbDeduplicator():
             'features_shape': self.features_df.shape,
             'timestamp': pd.Timestamp.now().isoformat()
         }
-        
-        if format.lower() == 'zarr':
-            import zarr
-            import json
-            import os
-            import numpy as np
             
-            # Create the directory if it doesn't exist
-            os.makedirs(output_path, exist_ok=True)
-            
-            # Save features as a Zarr array
-            group = zarr.open(output_path, mode='w')
-            features_group = group.create_group('features')
-            
-            for col in self.features_df.columns:
-                data = self.features_df[col]
-                # Special handling for object columns - convert to fixed-length strings
-                if data.dtype == 'object':
-                    # Convert object to string array with explicit string dtype
-                    string_data = data.astype(str).to_numpy()
-                    # Use a fixed-length string dtype that zarr can handle
-                    max_len = max(len(s) for s in string_data) + 10  # Add some buffer
-                    string_dtype = np.dtype(f'U{max_len}')  # Unicode string with max length
-                    features_group.create_array(name=col, data=string_data, dtype=string_dtype)
-                else:
-                    # For numeric data, we can create arrays directly
-                    features_group.create_array(name=col, data=data.to_numpy())
-            
-            # Save metadata as JSON attribute
-            group.attrs['metadata'] = json.dumps(metadata)
-            
-            logger.info(f"Saved features and metadata to Zarr store at {output_path}")
-            
-        elif format.lower() == 'csv':
+        if format.lower() == 'csv':
             # Save features as CSV
             self.features_df.to_csv(f"{output_path}.csv", index=False)
             
@@ -683,7 +739,7 @@ class DbDeduplicator():
             logger.info(f"Saved features to {output_path}.csv and metadata to {output_path}_metadata.json")
             
         else:
-            raise ValueError(f"Unsupported format: {format}. Use 'zarr' or 'csv'.")
+            raise ValueError(f"Unsupported format: {format}. Only 'csv' is supported right now.")
     
     @classmethod
     def load_features(cls, input_path, format='zarr'):
