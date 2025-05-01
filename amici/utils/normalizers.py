@@ -42,8 +42,14 @@ def normalize_interest_group_name(name: str) -> str:
     # Remove acronyms in parentheses appearing at the end of the name
     name = re.sub(r'\s*\([A-Z]{2,}\)\s*$', '', name)
 
-    # Remove extra whitespace
-    name = re.sub(r'\s+', ' ', name).strip()
+    # Replace ampersands with 'and'
+    name = re.sub(r'&', 'and', name)
+
+    # Convert to lowercase
+    name = name.lower()
+
+    # Shorten common terms
+    name = shorten_common_terms(name)
 
     # Replace all types of dashes with one dash and condense consecutive dashes
     name = re.sub(r'\s*[-–—]+\s*', '-', name)
@@ -54,11 +60,7 @@ def normalize_interest_group_name(name: str) -> str:
     # Remove commas
     name = re.sub(r',', '', name)
 
-    # Convert to lowercase
-    name = name.lower()
-
-    # Shorten common terms
-    name = shorten_common_terms(name)
+    name = re.sub(r'\s+', ' ', name).strip()
 
     return name
 

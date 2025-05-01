@@ -700,6 +700,7 @@ class DbDeduplicator():
             
             features_df = pd.DataFrame(features_dict)
             sorted_left_right = features_df[['left_norm', 'right_norm']].apply(sorted, axis=1).copy()
+            features_df = features_df[features_df.left_norm != features_df.right_norm]
             features_df = features_df[~sorted_left_right.duplicated(keep='first')]
             features_df = features_df.reset_index(drop=True)
 
@@ -730,6 +731,7 @@ class DbDeduplicator():
             # Load features
             features_df = pd.read_csv(f"{input_path}.csv")
             sorted_left_right = features_df[['left_norm', 'right_norm']].apply(sorted, axis=1).copy()
+            features_df = features_df[features_df.left_norm != features_df.right_norm]
             features_df = features_df[~sorted_left_right.duplicated(keep='first')]
             features_df = features_df.reset_index(drop=True)
             deduplicator.features_df = features_df
@@ -984,9 +986,9 @@ class HITLManager:
             logger.warning(f"Conflict while updating graph: {e}")
             return False
             
-        # Remove the pair from pending review
+        # Remove the reviewed pair from pending review
         self.pending_review = [p for p in self.pending_review 
-                               if not (p['left_norm'] == left_norm and p['right_norm'] == right_norm)]
+                               if not (p['left_norm'], p['right_norm']) in self.reviewed_pairs]
         
         return True
     
@@ -1049,6 +1051,23 @@ class HITLManager:
         with open(path, 'wb') as f:
             import pickle
             pickle.dump(state, f)
+
+    def get_probability_distribution(self):
+        """Get the distribution of match probabilities across all candidate pairs"""
+        if self.deduplicator.features_df is None:
+            return [0] * 10  # Empty distribution
+        
+        # If model is trained, use its predictions
+        if self.model.is_trained:
+            probs = self.model.predict_proba(self.deduplicator.features_df)
+        else:
+            # Otherwise use a similarity score as proxy
+            probs = self.deduplicator.features_df['jaro_winkler'].values
+        
+        # Create histogram with 10 bins (0-0.1, 0.1-0.2, ..., 0.9-1.0)
+        hist, _ = np.histogram(probs, bins=10, range=(0, 1))
+        
+        return hist.tolist()
     
     @classmethod
     def load_state(cls, path, deduplicator):
@@ -1122,8 +1141,8 @@ class HITLGui:
                 right_norm = normalize_interest_group_name(item['right_norm'])
                 
                 # Get original names from the graph
-                left_names = list(self.hitl_manager.deduplicator.dedupe_graph.nodes[left_norm]['docs'].values())
-                right_names = list(self.hitl_manager.deduplicator.dedupe_graph.nodes[right_norm]['docs'].values())
+                left_names = list(set(self.hitl_manager.deduplicator.dedupe_graph.nodes[left_norm]['docs'].values()))
+                right_names = list(set(self.hitl_manager.deduplicator.dedupe_graph.nodes[right_norm]['docs'].values()))
                 
                 formatted_batch.append({
                     'left_norm': left_norm,
@@ -1165,12 +1184,16 @@ class HITLGui:
             labeled_count = len(self.hitl_manager.labeled_pairs)
             match_count = sum(1 for _, _, is_match, _ in self.hitl_manager.labeled_pairs if is_match)
             
+            # Get probability distribution for the histogram
+            prob_distribution = self.hitl_manager.get_probability_distribution()
+            
             return jsonify({
                 'total_candidate_pairs': total_pairs,
                 'reviewed_pairs': labeled_count,
                 'match_count': match_count,
                 'non_match_count': labeled_count - match_count,
-                'model_trained': self.hitl_manager.model.is_trained
+                'model_trained': self.hitl_manager.model.is_trained,
+                'probability_distribution': prob_distribution
             })
         
         @app.route('/api/save_state', methods=['POST'])
@@ -1253,11 +1276,37 @@ class ClassifierModel:
             
         # Extract features from the dataframe
         X = features_df[self.feature_columns].values
-
-        print(X.shape)
         
-        # Get positive class probabilities
-        return self.model.predict_proba(X).reshape(-1, 1)
+        if self.model is None:
+            raise ValueError("Model is not initialized. Call _initialize_model() first.")
+
+        # Predict probabilities
+        if hasattr(self.model, 'predict_proba'):
+            try:
+                # Check if the model has predict_proba method
+                p = self.model.predict_proba(X)[:, 1]
+            except IndexError:
+                if p.shape[1] == 1:
+                    # If the model returns a single column, use that
+                    p = p[:, 0]
+                else:
+                    # For debugging -- show X
+                    p = self.model.predict_proba(X)
+                    logger.error(f"X shape: {X.shape}")
+                    logger.error(f"X: {X}")
+                    logger.error(f"Model: {self.model}")
+                    logger.error(f"Model type: {type(self.model)}")
+                    logger.error(f"Model predict_proba {p.shape}: {p}")
+
+                    raise IndexError("Model prediction failed. Check the input shape.")
+        else:
+            # Use predict for regressors
+            p = self.model.predict(X)
+        # Ensure p is a 1D array
+        if p.ndim > 1:
+            p = p.flatten()
+
+        return p
     
     def save_to_dict(self):
         """Save model to a dictionary"""

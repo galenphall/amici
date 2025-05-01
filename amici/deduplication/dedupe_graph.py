@@ -19,6 +19,7 @@ from sentence_transformers import SentenceTransformer
 from sklearn.ensemble import RandomForestClassifier
 from graph_tool.all import Graph, minimize_nested_blockmodel_dl, mcmc_equilibrate, BlockState
 import graph_tool.inference as gt_inf
+import editdistance
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
 from amici.utils.normalizers import normalize_interest_group_name, shorten_common_terms
@@ -319,7 +320,7 @@ class DedupeGraph(nx.Graph):
         for u in component:
             # None of the merged nodes should appear in the same document
             if any(doc in docs for doc in self.nodes[u]['docs']):
-                raise ValueError(f"Interest groups {u} are associated with the same document.")
+                logging.warning(f"Interest groups {u} are associated with the same document.")
 
             names.extend(self.nodes[u]['docs'].values())
             docs.update(self.nodes[u]['docs'])
@@ -328,3 +329,49 @@ class DedupeGraph(nx.Graph):
         merged_name = min(names, key=lambda x: sum(editdistance.eval(x, y) for y in names) / len(names))
 
         return merged_name
+
+    def save_to_file(self, path):
+        """
+        Save the current graph to a file
+        
+        Args:
+            path (str): Path to save the graph
+            
+        Returns:
+            bool: True if save was successful
+        """
+        import pickle
+        import os
+        
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        
+        # Use atomic write pattern
+        temp_path = f"{path}.tmp"
+        with open(temp_path, 'wb') as f:
+            pickle.dump(self, f)
+            
+        if os.path.exists(path):
+            os.replace(temp_path, path)
+        else:
+            os.rename(temp_path, path)
+            
+        return True
+    
+    @classmethod
+    def load_from_file(cls, path):
+        """
+        Load a graph from a file
+        
+        Args:
+            path (str): Path to the saved graph file
+            
+        Returns:
+            DedupeGraph: The loaded graph
+        """
+        import pickle
+        
+        with open(path, 'rb') as f:
+            graph = pickle.load(f)
+            
+        return graph

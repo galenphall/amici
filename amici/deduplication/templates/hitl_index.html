@@ -3,6 +3,8 @@
 <head>
     <title>Deduplication Review</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/css/bootstrap.min.css">
+    <!-- Add Chart.js for creating the histogram -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         .card {
             margin-bottom: 20px;
@@ -48,6 +50,9 @@
             background-color: #007bff;
             border-radius: 5px;
         }
+        .chart-container {
+            height: 200px;
+        }
     </style>
 </head>
 <body>
@@ -56,8 +61,39 @@
         
         <div id="statistics" class="card">
             <div class="card-header">Statistics</div>
-            <div class="card-body" id="statistics-content">
-                Loading statistics...
+            <div class="card-body">
+                <div class="row">
+                    <!-- Left side - text statistics -->
+                    <div class="col-md-6" id="statistics-content">
+                        Loading statistics...
+                    </div>
+                    <!-- Right side - probability histogram -->
+                    <div class="col-md-6">
+                        <div class="chart-container">
+                            <canvas id="probability-histogram"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div id="persistence-status" class="card mb-3">
+            <div class="card-header">Persistence Status</div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <p>Last autosave: <span id="last-save-time">Never</span></p>
+                        <p>Progress: <span id="completion-percentage">0</span>% complete</p>
+                    </div>
+                    <div class="col-md-6">
+                        <p>Speed: <span id="decisions-per-hour">0</span> decisions/hour</p>
+                        <p>Estimated time remaining: <span id="time-remaining">Unknown</span></p>
+                    </div>
+                </div>
+                <div class="d-flex justify-content-between mt-3">
+                    <button id="save-btn" class="btn btn-primary">Save Progress</button>
+                    <button id="download-btn" class="btn btn-success">Download Current Mapping</button>
+                </div>
             </div>
         </div>
         
@@ -90,28 +126,106 @@
             <div id="pairs-container"></div>
         </div>
         
-        <button id="save-btn" class="btn btn-primary mt-3">Save Progress</button>
-
         <div class="mb-5" style="height: 80px;"></div>
         <div id="bottom-nav" class="fixed-bottom bg-light text-center py-2">
             <small>Powered by AMICI</small>
+        </div>
     </div>
     
     <script>
+        // Global variables
+        let probabilityHistogram = null;
+        
         // JavaScript to fetch and display candidates, handle decisions
         document.addEventListener('DOMContentLoaded', function() {
+            initializeHistogram();
             loadStatistics();
             loadBatch();
             loadSamplingStats();
+            updatePersistenceStatus();
             
             document.getElementById('save-btn').addEventListener('click', function() {
                 saveState();
             });
             
+            document.getElementById('download-btn').addEventListener('click', function() {
+                window.location.href = '/api/download_mapping';
+            });
+            
             document.getElementById('uncertainty-toggle').addEventListener('change', function() {
                 toggleSamplingStrategy(this.checked);
             });
+            
+            // Update persistence status every 30 seconds
+            setInterval(updatePersistenceStatus, 30000);
         });
+        
+        function initializeHistogram() {
+            const ctx = document.getElementById('probability-histogram').getContext('2d');
+            probabilityHistogram = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: ['0-10%', '10-20%', '20-30%', '30-40%', '40-50%', '50-60%', '60-70%', '70-80%', '80-90%', '90-100%'],
+                    datasets: [{
+                        label: 'Match Probability Distribution',
+                        data: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                        backgroundColor: [
+                            'rgba(255, 99, 132, 0.6)',
+                            'rgba(255, 159, 64, 0.6)',
+                            'rgba(255, 205, 86, 0.6)',
+                            'rgba(75, 192, 192, 0.6)',
+                            'rgba(54, 162, 235, 0.6)',
+                            'rgba(153, 102, 255, 0.6)',
+                            'rgba(201, 203, 207, 0.6)',
+                            'rgba(255, 99, 132, 0.6)',
+                            'rgba(54, 162, 235, 0.6)',
+                            'rgba(75, 192, 192, 0.6)'
+                        ],
+                        borderColor: [
+                            'rgb(255, 99, 132)',
+                            'rgb(255, 159, 64)',
+                            'rgb(255, 205, 86)',
+                            'rgb(75, 192, 192)',
+                            'rgb(54, 162, 235)',
+                            'rgb(153, 102, 255)',
+                            'rgb(201, 203, 207)',
+                            'rgb(255, 99, 132)',
+                            'rgb(54, 162, 235)',
+                            'rgb(75, 192, 192)'
+                        ],
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Number of Pairs'
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Match Probability'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        title: {
+                            display: true,
+                            text: 'Match Probability Distribution'
+                        }
+                    }
+                }
+            });
+        }
         
         function loadStatistics() {
             fetch('/api/statistics')
@@ -123,7 +237,18 @@
                         <p>Model status: ${data.model_trained ? 'Trained' : 'Not trained'}</p>
                     `;
                     document.getElementById('statistics-content').innerHTML = statsHtml;
+                    
+                    // Update histogram with probability distribution
+                    if (data.probability_distribution) {
+                        updateHistogram(data.probability_distribution);
+                    }
                 });
+        }
+        
+        function updateHistogram(distribution) {
+            // Update the chart data
+            probabilityHistogram.data.datasets[0].data = distribution;
+            probabilityHistogram.update();
         }
         
         function loadBatch() {
@@ -148,6 +273,8 @@
         function renderPair(pair) {
             const container = document.createElement('div');
             container.className = 'card';
+            
+            // Use data attributes to store the values instead of inline onclick handlers
             container.dataset.left = pair.left_norm;
             container.dataset.right = pair.right_norm;
             
@@ -162,11 +289,11 @@
                     <div class="row">
                         <div class="col-md-6">
                             <h5>Entity 1</h5>
-                            ${pair.left_names.map(name => `<div class="name-variant">${name}</div>`).join('')}
+                            ${pair.left_names.map(name => `<div class="name-variant">${escapeHtml(name)}</div>`).join('')}
                         </div>
                         <div class="col-md-6">
                             <h5>Entity 2</h5>
-                            ${pair.right_names.map(name => `<div class="name-variant">${name}</div>`).join('')}
+                            ${pair.right_names.map(name => `<div class="name-variant">${escapeHtml(name)}</div>`).join('')}
                         </div>
                     </div>
                     
@@ -175,17 +302,32 @@
                     </div>
                     
                     <div class="text-center mt-3">
-                        <button class="btn btn-match me-2" onclick="recordDecision('${pair.left_norm}', '${pair.right_norm}', true)">
-                            Match ✓
-                        </button>
-                        <button class="btn btn-non-match" onclick="recordDecision('${pair.left_norm}', '${pair.right_norm}', false)">
-                            Not a Match ✗
-                        </button>
+                        <button class="btn btn-match me-2">Match ✓</button>
+                        <button class="btn btn-non-match">Not a Match ✗</button>
                     </div>
                 </div>
             `;
             
+            // Add event listeners after creating the HTML
+            container.querySelector('.btn-match').addEventListener('click', function() {
+                recordDecision(pair.left_norm, pair.right_norm, true);
+            });
+            
+            container.querySelector('.btn-non-match').addEventListener('click', function() {
+                recordDecision(pair.left_norm, pair.right_norm, false);
+            });
+            
             document.getElementById('pairs-container').appendChild(container);
+        }
+
+        // Helper function to escape HTML special characters
+        function escapeHtml(str) {
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
         }
         
         function recordDecision(left, right, isMatch) {
@@ -256,23 +398,57 @@
         }
         
         function saveState() {
+            const saveBtn = document.getElementById('save-btn');
+            saveBtn.disabled = true;
+            saveBtn.innerText = 'Saving...';
+            
             fetch('/api/save_state', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({
-                    path: 'hitl_state.pkl'
-                })
+                body: JSON.stringify({})
             })
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    alert('Progress saved successfully!');
+                    saveBtn.innerText = 'Saved!';
+                    setTimeout(() => {
+                        saveBtn.innerText = 'Save Progress';
+                        saveBtn.disabled = false;
+                        updatePersistenceStatus();
+                    }, 1500);
                 } else {
-                    alert('Error saving progress.');
+                    saveBtn.innerText = 'Save Failed';
+                    saveBtn.disabled = false;
                 }
             });
+        }
+        
+        function updatePersistenceStatus() {
+            fetch('/api/progress_status')
+                .then(response => response.json())
+                .then(data => {
+                    // Format the last save time
+                    const lastSaveDate = data.last_save ? new Date(data.last_save * 1000) : null;
+                    document.getElementById('last-save-time').innerText = 
+                        lastSaveDate ? lastSaveDate.toLocaleString() : 'Never';
+                    
+                    // Update progress indicators
+                    document.getElementById('completion-percentage').innerText = 
+                        data.completion_percentage.toFixed(1);
+                    document.getElementById('decisions-per-hour').innerText = 
+                        Math.round(data.decisions_per_hour);
+                    
+                    // Format remaining time
+                    let remainingText = 'Unknown';
+                    if (data.estimated_remaining_hours > 0) {
+                        const hours = Math.floor(data.estimated_remaining_hours);
+                        const minutes = Math.round((data.estimated_remaining_hours - hours) * 60);
+                        remainingText = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+                    }
+                    document.getElementById('time-remaining').innerText = remainingText;
+                });
         }
         
         function loadSamplingStats() {
