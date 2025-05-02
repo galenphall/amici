@@ -16,7 +16,7 @@ import numpy as np
 from rapidfuzz import fuzz
 from Levenshtein import distance as lev_dist
 from Levenshtein import jaro_winkler
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
 from sklearn.ensemble import RandomForestClassifier
 from graph_tool.all import Graph, minimize_nested_blockmodel_dl, mcmc_equilibrate, BlockState
 import graph_tool.inference as gt_inf
@@ -40,7 +40,7 @@ class DbDeduplicator():
                  word_similarity_threshold=0.6,
                  top_n_matches=10,
                  # Prediction parameters
-                 sentence_transformer_model='all-MiniLM-L6-v2',
+                 sentence_crossencoder_model='cross-encoder/stsb-roberta-base',
                  hbsbm_samples=1000,
                  hbsbm_wait=1000,
                  hbsbm_niter=10,
@@ -61,7 +61,7 @@ class DbDeduplicator():
             top_n_matches (int): Number of top matches to consider per entity
             
             # Prediction parameters
-            sentence_transformer_model (str): Name of the sentence transformer model
+            sentence_crossencoder_model (str): Name of the sentence cross encoder model
             hbsbm_samples (int): Number of samples for HBSBM
             hbsbm_wait (int): Wait iterations for HBSBM equilibration
             hbsbm_niter (int): Number of iterations for HBSBM
@@ -82,7 +82,7 @@ class DbDeduplicator():
         self.top_n_matches = top_n_matches
         
         # Prediction parameters
-        self.sentence_transformer_model = sentence_transformer_model
+        self.sentence_crossencoder_model = sentence_crossencoder_model
         self.hbsbm_samples = hbsbm_samples
         self.hbsbm_wait = hbsbm_wait
         self.hbsbm_niter = hbsbm_niter
@@ -92,7 +92,7 @@ class DbDeduplicator():
         os.makedirs(self.output_dir, exist_ok=True)
         
         # Paths for persistent storage
-        self.features_path = os.path.join(self.output_dir, "features.zarr")
+        self.features_path = os.path.join(self.output_dir, "features.csv")
         self.graph_path = os.path.join(self.output_dir, "dedupe_graph.pkl")
         self.hitl_state_path = os.path.join(self.output_dir, "hitl_state.pkl")
         
@@ -103,7 +103,6 @@ class DbDeduplicator():
         self.blocks = defaultdict(list)
         self.matches = defaultdict(list)
         self.features_df = None
-        self.st_mini = None
         self.char_vectorizer = None
         self.word_vectorizer = None
         self.embeddings_cache = {}
@@ -291,12 +290,11 @@ class DbDeduplicator():
         
         # Initialize SentenceTransformer model using the configured model name
         try:
-            self.st_mini = SentenceTransformer(self.sentence_transformer_model)
-            logger.info(f"Successfully loaded SentenceTransformer model: {self.sentence_transformer_model}")
+            self.cross_encoder = CrossEncoder(self.sentence_crossencoder_model)
+            logger.info(f"Successfully loaded SentenceTransformer model: {self.sentence_crossencoder_model}")
         except Exception as e:
             logger.warning(f"Could not load SentenceTransformer model: {e}")
             logger.warning("Proceeding without sentence encoding features")
-            self.st_mini = None
 
         # Generate pairs from blocks
         logger.info("Generating pairs from blocking results")
@@ -344,43 +342,6 @@ class DbDeduplicator():
                 )
                 self.word_vectorizer.fit(all_names)
         
-        # Precompute embeddings for all raw names if SentenceTransformer is available
-        self.embeddings_cache = {}
-
-        if self.st_mini is not None:
-            logger.info("Precomputing embeddings for all names")
-            
-            # Compute embeddings in batches to improve efficiency
-            batch_size = 128
-            
-            for i in tqdm(range(0, len(all_names), batch_size), desc="Computing embeddings"):
-                batch = all_names[i:i+batch_size]
-                batch_embeddings = self.st_mini.encode(batch)
-                
-                for j, name in enumerate(batch):
-                    self.embeddings_cache[name] = batch_embeddings[j]
-            
-            logger.info(f"Cached embeddings for {len(self.embeddings_cache)} unique names")
-            
-            # Define sentence similarity using cached embeddings
-            def sentence_cross_encoding(a, b):
-                # Get embeddings from cache
-                e_a = self.embeddings_cache.get(a)
-                e_b = self.embeddings_cache.get(b)
-                
-                if e_a is None or e_b is None:
-                    # Handle case where embedding wasn't precomputed (shouldn't happen)
-                    logger.warning(f"Missing embedding in cache for: {a if e_a is None else b}")
-                    if e_a is None:
-                        e_a = self.st_mini.encode(a)
-                        self.embeddings_cache[a] = e_a
-                    if e_b is None:
-                        e_b = self.st_mini.encode(b)
-                        self.embeddings_cache[b] = e_b
-                
-                # Calculate cosine similarity
-                return np.dot(e_a, e_b) / (np.linalg.norm(e_a) * np.linalg.norm(e_b))
-        
         # Define similarity functions
         def first_letter_jaccard(a, b):
             words_a = a.split(" ")
@@ -414,9 +375,6 @@ class DbDeduplicator():
             'len_ratio': lambda a, b: min(len(a), len(b)) / max(len(a), len(b)) if max(len(a), len(b)) > 0 else 0
         }
         
-        if self.st_mini is not None:
-            methods['sentence_cross_encoding'] = lambda a, b: sentence_cross_encoding(a, b)
-        
         # Featurize pairs
         def featurize_pairs(pairs_data):
             logger.info("Featurizing pairs")
@@ -449,7 +407,12 @@ class DbDeduplicator():
         # Featurize all pairs
         features_df = featurize_pairs(pairs)
 
-        # Add HBSBM co-occurrence probabilities
+        # Add cross-encoded scores if available
+        if self.sentence_crossencoder_model:
+            logger.info("Cross-encoding pairs using SentenceTransformer model")
+            features_df = self.cross_encode(features_df)
+
+        # Add regular equivalence scores
         features_df = self.deg_corr_reg_equiv(features_df)
         
         # Store the features DataFrame
@@ -457,6 +420,36 @@ class DbDeduplicator():
         
         # Save the features after computation
         self.save_features(self.features_path)
+        
+        return features_df
+
+    def cross_encode(self, features_df):
+        """
+        Cross-encode the features using a specified model.
+
+        Args:
+            features_df (pd.DataFrame): DataFrame containing pairs and their features
+            model (str): Name of the cross-encoder model to use
+        Returns:
+            pd.DataFrame: Updated features DataFrame with cross-encoded scores
+        """
+        # Ensure the model is loaded
+        if not hasattr(self, 'cross_encoder'):
+            try:
+                self.cross_encoder = CrossEncoder(self.sentence_crossencoder_model)
+                logger.info(f"Loaded cross-encoder model: {self.sentence_crossencoder_model}")
+            except Exception as e:
+                logger.warning(f"Could not load cross-encoder model: {e}")
+                return features_df
+        
+        # Prepare input for cross-encoder
+        pairs = list(zip(features_df['left_norm'], features_df['right_norm']))
+        
+        # Get cross-encoded scores
+        scores = self.cross_encoder.predict(pairs)
+        
+        # Add scores to DataFrame
+        features_df['sentence_cross_encoder'] = scores
         
         return features_df
 
@@ -718,7 +711,7 @@ class DbDeduplicator():
                 'top_n_matches': self.top_n_matches
             },
             'prediction_params': {
-                'sentence_transformer_model': self.sentence_transformer_model,
+                'sentence_crossencoder_model': self.sentence_crossencoder_model,
                 'hbsbm_samples': self.hbsbm_samples,
                 'hbsbm_wait': self.hbsbm_wait,
                 'hbsbm_niter': self.hbsbm_niter
@@ -729,11 +722,11 @@ class DbDeduplicator():
             
         if format.lower() == 'csv':
             # Save features as CSV
-            self.features_df.to_csv(f"{output_path}.csv", index=False)
+            self.features_df.to_csv(f"{output_path.strip('.csv')}.csv", index=False)
             
             # Save metadata separately as JSON
             import json
-            with open(f"{output_path}_metadata.json", 'w') as f:
+            with open(f"{output_path.strip('.csv')}_metadata.json", 'w') as f:
                 json.dump(metadata, f, indent=2)
                 
             logger.info(f"Saved features to {output_path}.csv and metadata to {output_path}_metadata.json")
@@ -742,7 +735,7 @@ class DbDeduplicator():
             raise ValueError(f"Unsupported format: {format}. Only 'csv' is supported right now.")
     
     @classmethod
-    def load_features(cls, input_path, format='zarr'):
+    def load_features(cls, input_path, format='csv'):
         """
         Load features and metadata from disk and instantiate a DbDeduplicator.
         
@@ -798,7 +791,7 @@ class DbDeduplicator():
             
         elif format.lower() == 'csv':
             # Load metadata from JSON
-            with open(f"{input_path}_metadata.json", 'r') as f:
+            with open(f"{input_path.strip('.csv')}_metadata.json", 'r') as f:
                 metadata = json.load(f)
             
             # Create deduplicator with loaded parameters
@@ -1142,13 +1135,14 @@ class ClassifierModel:
 
         # Predict probabilities
         if hasattr(self.model, 'predict_proba'):
+            p = self.model.predict_proba(X)
             try:
                 # Check if the model has predict_proba method
-                p = self.model.predict_proba(X)[:, 1]
+                pr = p[:, 1]
             except IndexError:
                 if p.shape[1] == 1:
                     # If the model returns a single column, use that
-                    p = p[:, 0]
+                    pr = p[:, 0]
                 else:
                     # For debugging -- show X
                     p = self.model.predict_proba(X)
@@ -1161,12 +1155,12 @@ class ClassifierModel:
                     raise IndexError("Model prediction failed. Check the input shape.")
         else:
             # Use predict for regressors
-            p = self.model.predict(X)
+            pr = self.model.predict(X)
         # Ensure p is a 1D array
-        if p.ndim > 1:
-            p = p.flatten()
+        if pr.ndim > 1:
+            pr = pr.flatten()
 
-        return p
+        return pr
     
     def save_to_dict(self):
         """
@@ -1239,7 +1233,8 @@ class HITLManager:
             autosave_interval (int, optional): Number of decisions after which to autosave
         """
         self.deduplicator = deduplicator
-        self.model = model or ClassifierModel()
+        self.model = model or ClassifierModel(feature_columns=deduplicator.features_df.drop(
+            columns=['left_norm', 'right_norm', 'match_probability'], errors='ignore').columns.tolist())
         self.batch_size = batch_size
         self.labeled_pairs = []  # (left, right, label, timestamp)
         self.pending_review = []
@@ -1297,7 +1292,7 @@ class HITLManager:
             
         # Filter out already reviewed pairs
         mask = ~df.apply(lambda x: (x['left_norm'], x['right_norm']) in self.reviewed_pairs, axis=1)
-        candidates = df[mask]
+        candidates = df[mask].copy()
         
         # Calculate uncertainty (closer to 0.5 means more uncertain)
         if self.uncertainty_sampling:
@@ -1403,6 +1398,7 @@ class HITLManager:
         Returns:
             bool: True if the decision was successfully recorded, False if there was a conflict
         """
+        retrain = False
         # Record the labeled pair
         self.labeled_pairs.append((left_norm, right_norm, is_match, pd.Timestamp.now()))
         self.reviewed_pairs.add((left_norm, right_norm))
@@ -1413,6 +1409,8 @@ class HITLManager:
             for u, v, b in updates:
                 self.labeled_pairs.append((u, v, b, pd.Timestamp.now()))
                 self.reviewed_pairs.add((u, v))
+                if len(self.labeled_pairs) % 10 == 0:
+                    retrain = True
         except ValueError as e:
             # Handle conflicts in the graph (e.g., trying to add a mismatch when a match exists)
             logger.warning(f"Conflict while updating graph: {e}")
@@ -1428,6 +1426,15 @@ class HITLManager:
             self.last_save_count = len(self.labeled_pairs)
             logger.info(f"Autosaved after {self.autosave_interval} decisions to {self.save_path}")
         
+        if retrain:
+            # Retrain the model if needed
+            retrain_success = self.retrain_model()
+            if retrain_success:
+                logger.info("Model retrained successfully")
+            else:
+                logger.warning("Model retraining skipped due to insufficient data")
+                return False
+
         return True
     
     def retrain_model(self, force=False):
@@ -1460,7 +1467,7 @@ class HITLManager:
                     X_train.append(feature_values)
                     y_train.append(1 if label else 0)
                 else:
-                    logger.warning(f"Missing features for pair ({left}, {right})")
+                    logger.warning(f"Missing features for pair ({left}, {right}): {row}")
         
         if not X_train:
             logger.warning("No matching feature rows found for labeled pairs")
@@ -1783,10 +1790,6 @@ class HITLGui:
             
             success = self.hitl_manager.record_decision(left_norm, right_norm, is_match)
             
-            # Periodically retrain the model
-            if len(self.hitl_manager.labeled_pairs) % 10 == 0:
-                self.hitl_manager.retrain_model()
-            
             return jsonify({'success': success})
         
         @app.route('/api/statistics', methods=['GET'])
@@ -1911,7 +1914,7 @@ class HITLGui:
         self.hitl_manager.initialize_candidates()
         
         # Start the Flask app
-        self.app.run(host=self.host, port=self.port, debug=True)
+        self.app.run(host=self.host, port=self.port, debug=False)
 
 
 # if __name__ == "__main__":
