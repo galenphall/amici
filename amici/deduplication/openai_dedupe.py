@@ -346,6 +346,68 @@ def download_batch_results(output_file_id: str) -> Dict[str, Any]:
     
     return results
 
+def resume_batch_processing(batch_id: str, output_file: str = None, no_wait: bool = False, polling_interval: int = 60) -> pd.DataFrame:
+    """
+    Resume processing of an existing batch job
+    
+    Args:
+        batch_id: ID of the batch job to resume
+        output_file: Path to save results CSV
+        no_wait: Don't wait for batch completion
+        polling_interval: Seconds between status checks
+        
+    Returns:
+        DataFrame with entity resolution results
+    """
+    logger.info(f"Resuming batch processing for batch ID: {batch_id}")
+    
+    # Check batch status
+    final_batch = check_batch_status(batch_id, not no_wait, polling_interval)
+    
+    if final_batch["status"] != "completed":
+        logger.warning(f"Batch did not complete. Final status: {final_batch['status']}")
+        if no_wait:
+            logger.info("You can check the batch status later with the batch ID")
+            return pd.DataFrame()
+        return pd.DataFrame()
+    
+    # Download and process results
+    logger.info("Downloading batch results...")
+    output_file_id = final_batch["output_file_id"]
+    batch_results = download_batch_results(output_file_id)
+    
+    # Create results dataframe
+    results_data = []
+    
+    # Process the batch results
+    for batch_idx, batch_result in batch_results.items():
+        # Each batch result is an array of pair assessments
+        for result in batch_result:
+            if 'pair' not in result:
+                logger.warning(f"Missing pair number in result from batch {batch_idx}")
+                continue
+                
+            row_data = {
+                'org1': "Unknown",  # We don't have the original data when resuming
+                'org2': "Unknown",
+                'are_same_entity': result.get('are_same_entity', False),
+                'confidence': result.get('confidence', 0.0),
+                'pair': result.get('pair'),
+                'batch': batch_idx
+            }
+            
+            results_data.append(row_data)
+    
+    results_df = pd.DataFrame(results_data)
+    
+    # Save results if output file is specified
+    if output_file and not results_df.empty:
+        results_df.to_csv(output_file, index=False)
+        logger.info(f"Saved results to {output_file}")
+    
+    logger.info("Batch processing resumed successfully")
+    return results_df
+
 def process_dataframe_for_entity_resolution(df: pd.DataFrame, 
                                           org1_column: str, 
                                           org2_column: str, 
@@ -355,7 +417,8 @@ def process_dataframe_for_entity_resolution(df: pd.DataFrame,
                                           max_pairs: int = None,
                                           no_wait: bool = False,
                                           polling_interval: int = 60,
-                                          batch_size: int = 10) -> pd.DataFrame:
+                                          batch_size: int = 10,
+                                          resume_batch: str = None) -> pd.DataFrame:
     """
     Process a dataframe for entity resolution using OpenAI's Batch API
     
@@ -370,10 +433,20 @@ def process_dataframe_for_entity_resolution(df: pd.DataFrame,
         no_wait: Don't wait for batch completion
         polling_interval: Seconds between status checks
         batch_size: Number of org pairs to process in a single API call
+        resume_batch: Batch ID to resume processing
         
     Returns:
         DataFrame with entity resolution results
     """
+    # If resuming a batch, use dedicated function
+    if resume_batch:
+        return resume_batch_processing(
+            batch_id=resume_batch,
+            output_file=output_file,
+            no_wait=no_wait,
+            polling_interval=polling_interval
+        )
+    
     # Extract org pairs from dataframe
     org_pairs = []
     pair_indices = []
@@ -503,9 +576,9 @@ def process_dataframe_for_entity_resolution(df: pd.DataFrame,
 
 def main():
     parser = argparse.ArgumentParser(description="Entity resolution for interest groups using OpenAI Batch API")
-    parser.add_argument("--input", required=True, help="Input CSV file")
-    parser.add_argument("--org1-column", required=True, help="Column name for first organization")
-    parser.add_argument("--org2-column", required=True, help="Column name for second organization")
+    parser.add_argument("--input", help="Input CSV file")
+    parser.add_argument("--org1-column", help="Column name for first organization")
+    parser.add_argument("--org2-column", help="Column name for second organization")
     parser.add_argument("--output", help="Output CSV file path")
     parser.add_argument("--model", default="gpt-4o-mini", help="OpenAI model to use")
     parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
@@ -513,24 +586,32 @@ def main():
     parser.add_argument("--polling-interval", type=int, default=60, help="Seconds between status checks")
     parser.add_argument("--max-pairs", type=int, help="Maximum number of pairs to process (for testing)")
     parser.add_argument("--batch-size", type=int, default=10, help="Number of pairs to process in a single API call")
+    parser.add_argument("--resume-batch", help="Resume processing for an existing batch ID")
     args = parser.parse_args()
     
-    # Read input CSV
-    df = pd.read_csv(args.input)
-    logger.info(f"Read {len(df)} rows from {args.input}")
+    # Validate arguments
+    if not args.resume_batch and (not args.input or not args.org1_column or not args.org2_column):
+        parser.error("--input, --org1-column, and --org2-column are required unless --resume-batch is specified")
+    
+    # Read input CSV if not resuming
+    df = pd.DataFrame()
+    if args.input:
+        df = pd.read_csv(args.input)
+        logger.info(f"Read {len(df)} rows from {args.input}")
     
     # Process for entity resolution
     results_df = process_dataframe_for_entity_resolution(
         df=df,
-        org1_column=args.org1_column,
-        org2_column=args.org2_column,
+        org1_column=args.org1_column if not args.resume_batch else None,
+        org2_column=args.org2_column if not args.resume_batch else None,
         model=args.model,
         output_file=args.output,
         yes=args.yes,
         max_pairs=args.max_pairs,
         no_wait=args.no_wait,
         polling_interval=args.polling_interval,
-        batch_size=args.batch_size
+        batch_size=args.batch_size,
+        resume_batch=args.resume_batch
     )
     
     if results_df.empty:

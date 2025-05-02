@@ -407,10 +407,10 @@ class DbDeduplicator():
         # Featurize all pairs
         features_df = featurize_pairs(pairs)
 
-        # Add cross-encoded scores if available
-        if self.sentence_crossencoder_model:
-            logger.info("Cross-encoding pairs using SentenceTransformer model")
-            features_df = self.cross_encode(features_df)
+        # # Add cross-encoded scores if available
+        # if self.sentence_crossencoder_model:
+        #     logger.info("Cross-encoding pairs using SentenceTransformer model")
+        #     features_df = self.cross_encode(features_df)
 
         # Add regular equivalence scores
         features_df = self.deg_corr_reg_equiv(features_df)
@@ -482,29 +482,39 @@ class DbDeduplicator():
         logger.info(f"Found {len(connected_dockets)} dockets connected to blocked amici")
         
         # Create subgraph
-        subgraph_nodes = list(blocked_amici.union(connected_dockets))
-        subgraph = self.dedupe_graph.subgraph(subgraph_nodes)
+        position_edges = [(e[0], e[1]) for e in self.dedupe_graph.edges(data=True) if e[2].get('type_') == 'position']
+        subgraph = self.dedupe_graph.edge_subgraph(position_edges).copy()
+        subgraph_nodes = list(set(subgraph.nodes()))
 
-        A = nx.to_numpy_array(subgraph, nodelist=subgraph_nodes)
-        D = np.diag(A.sum(axis=1))
-        sigma = np.linalg.inv(D - alpha * A)
+        # Weight the edges: R = 1, P = -1
+        for u, v, data in subgraph.edges(data=True):
+            if data.get('type_') == 'position':
+                position = data.get('position', 'unknown')
+                if position == 'R':
+                    subgraph.edges[u, v]['weight'] = 1
+                elif position == 'P':
+                    subgraph.edges[u, v]['weight'] = -1
+                else:
+                    logger.warning(f"Unknown position type: {position}. Defaulting to 0.")
+                    subgraph.edges[u, v]['weight'] = 0
+
+        A = nx.to_numpy_array(subgraph, nodelist=subgraph_nodes, weight='weight')
+        D = np.diag(abs(A**2).sum(axis=1))
+        sigma = np.linalg.inv(D - alpha * A**2)
         sigma = np.nan_to_num(sigma, nan=0.0)
         logger.info("Computed degree-corrected regular equivalence matrix")
 
         # Create a DataFrame with amicus names
         sigma_df = pd.DataFrame(sigma, index=subgraph_nodes, columns=subgraph_nodes)
+        sigma_df = sigma_df.reindex(index=blocked_amici, columns=blocked_amici, fill_value=0)
         logger.info("Created DataFrame for degree-corrected regular equivalence")
 
+        # Create a dictionary with (left, right) as keys and sigma values
+        sigma_dict = sigma_df.stack().to_dict()
+
         # Add DC-reg-eq to features
-        logger.info("Adding DC-reg-eq to features")
-        def get_dc_reg_eq(left, right):
-            if left in sigma_df.index and right in sigma_df.columns:
-                return sigma_df.loc[left, right]
-            return 0.0
-        
-        # Add the DC-reg-eq as a feature
         features_df['dc_reg_eq'] = features_df.apply(
-            lambda row: get_dc_reg_eq(row['left_norm'], row['right_norm']),
+            lambda row: sigma_dict.get((row['left_norm'], row['right_norm']), 0.0) if row['left_norm'] != row['right_norm'] else 1.0,
             axis=1
         )
         logger.info("Added DC-reg-eq feature to DataFrame")
@@ -688,13 +698,13 @@ class DbDeduplicator():
 
         return features_df
 
-    def save_features(self, output_path, format='csv'):
+    def save_features(self, output_path, format_='csv'):
         """
         Save the features along with metadata about the parameters used.
         
         Args:
             output_path: Path where to save the features
-            format: Storage format ('zarr' or 'csv')
+            format_: Storage format_ ('zarr' or 'csv')
         """
         if self.features_df is None:
             raise ValueError("No features to save. Run predict() first.")
@@ -719,36 +729,42 @@ class DbDeduplicator():
             'features_shape': self.features_df.shape,
             'timestamp': pd.Timestamp.now().isoformat()
         }
+
+        # Remove ending from output_path
+        output_path = output_path.rstrip('.zarr').rstrip('.csv')
             
-        if format.lower() == 'csv':
+        if format_.lower() == 'csv':
             # Save features as CSV
-            self.features_df.to_csv(f"{output_path.strip('.csv')}.csv", index=False)
+            self.features_df.to_csv(f"{output_path}.csv", index=False)
             
             # Save metadata separately as JSON
             import json
-            with open(f"{output_path.strip('.csv')}_metadata.json", 'w') as f:
+            with open(f"{output_path}_metadata.json", 'w') as f:
                 json.dump(metadata, f, indent=2)
                 
             logger.info(f"Saved features to {output_path}.csv and metadata to {output_path}_metadata.json")
             
         else:
-            raise ValueError(f"Unsupported format: {format}. Only 'csv' is supported right now.")
+            raise ValueError(f"Unsupported format: {format_}. Only 'csv' is supported right now.")
     
     @classmethod
-    def load_features(cls, input_path, format='csv'):
+    def load_features(cls, input_path, format_='csv'):
         """
         Load features and metadata from disk and instantiate a DbDeduplicator.
         
         Args:
             input_path: Path to the stored features
-            format: Storage format ('zarr' or 'csv')
+            format_: Storage format_ ('zarr' or 'csv')
             
         Returns:
             (DbDeduplicator, DataFrame): The instantiated deduplicator and features
         """
         import json
+
+        # remove ending from input_path
+        input_path = input_path.rstrip('.zarr').rstrip('.csv')
         
-        if format.lower() == 'zarr':
+        if format_.lower() == 'zarr':
             import zarr
             
             # Open Zarr store directly
@@ -789,9 +805,9 @@ class DbDeduplicator():
             
             logger.info(f"Loaded features and metadata from Zarr store at {input_path}")
             
-        elif format.lower() == 'csv':
+        elif format_.lower() == 'csv':
             # Load metadata from JSON
-            with open(f"{input_path.strip('.csv')}_metadata.json", 'r') as f:
+            with open(f"{input_path}_metadata.json", 'r') as f:
                 metadata = json.load(f)
             
             # Create deduplicator with loaded parameters
@@ -821,7 +837,7 @@ class DbDeduplicator():
             logger.info(f"Loaded features from {input_path}.csv and metadata from {input_path}_metadata.json")
         
         else:
-            raise ValueError(f"Unsupported format: {format}. Use 'zarr' or 'csv'.")
+            raise ValueError(f"Unsupported format: {format_}. Use 'zarr' or 'csv'.")
         
         return deduplicator, features_df
         
