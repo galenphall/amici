@@ -23,8 +23,32 @@ load_dotenv()
 
 # OpenAI model pricing per 1M tokens
 MODEL_PRICING = {
+    "gpt-4.1": {"input": 1.00, "output": 4.00},
+    "gpt-4.1-2025-04-14": {"input": 1.00, "output": 4.00},
+    "gpt-4.1-mini": {"input": 0.20, "output": 0.80},
+    "gpt-4.1-mini-2025-04-14": {"input": 0.20, "output": 0.80},
+    "gpt-4.1-nano": {"input": 0.05, "output": 0.20},
+    "gpt-4.1-nano-2025-04-14": {"input": 0.05, "output": 0.20},
+    "gpt-4.5-preview": {"input": 37.50, "output": 75.00},
+    "gpt-4.5-preview-2025-02-27": {"input": 37.50, "output": 75.00},
     "gpt-4o": {"input": 1.25, "output": 5.00},
+    "gpt-4o-2024-08-06": {"input": 1.25, "output": 5.00},
     "gpt-4o-mini": {"input": 0.075, "output": 0.30},
+    "gpt-4o-mini-2024-07-18": {"input": 0.075, "output": 0.30},
+    "o1": {"input": 7.50, "output": 30.00},
+    "o1-2024-12-17": {"input": 7.50, "output": 30.00},
+    "o1-pro": {"input": 75.00, "output": 300.00},
+    "o1-pro-2025-03-19": {"input": 75.00, "output": 300.00},
+    "o3": {"input": 5.00, "output": 20.00},
+    "o3-2025-04-16": {"input": 5.00, "output": 20.00},
+    "o4-mini": {"input": 0.55, "output": 2.20},
+    "o4-mini-2025-04-16": {"input": 0.55, "output": 2.20},
+    "o3-mini": {"input": 0.55, "output": 2.20},
+    "o3-mini-2025-01-31": {"input": 0.55, "output": 2.20},
+    "o1-mini": {"input": 0.55, "output": 2.20},
+    "o1-mini-2024-09-12": {"input": 0.55, "output": 2.20},
+    "computer-use-preview": {"input": 1.50, "output": 6.00},
+    "computer-use-preview-2025-03-11": {"input": 1.50, "output": 6.00}
 }
 
 # Define the prompt for entity resolution
@@ -48,16 +72,30 @@ For each pair, provide your determination in a JSON array format like this:
 ENTITY_RESOLUTION_SCHEMA = {
     "type": "object",
     "properties": {
-        "are_same_entity": {
-            "type": "boolean",
-            "description": "Whether the two organizations are the same entity"
-        },
-        "confidence": {
-            "type": "number",
-            "description": "Confidence score from 0 to 1"
-        }
+        "results" : {
+            "type":"array",
+            "items": {
+                "type":"object",
+                "properties":{
+                    "pair": {
+                        "type": "number",
+                        "description": "The number of the corresponding entity pair"
+                    },
+                    "are_same_entity": {
+                        "type": "boolean",
+                        "description": "Whether the two organizations are the same entity"
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "description": "Confidence score from 0 to 1"
+                    }
+                },
+                "required": ["are_same_entity", "confidence", "pair"],
+                "additionalProperties": False
+            }
+        }        
     },
-    "required": ["are_same_entity", "confidence"],
+    "required": ["results"],
     "additionalProperties": False
 }
 
@@ -156,7 +194,7 @@ def create_batch_requests(org_pairs: List[Tuple[str, str]], prompt: str, model: 
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": user_message}
                 ],
-                "response_format": {"type": "json_object"},
+                "response_format": {"type": "json_schema", "json_schema": {"name": "MatchSchema", "strict": True, "schema": ENTITY_RESOLUTION_SCHEMA}},
                 "temperature": 0.0
             }
         }
@@ -316,7 +354,13 @@ def download_batch_results(output_file_id: str) -> Dict[str, Any]:
     # Download file content
     file_response = client.files.content(output_file_id)
     content = file_response.text
+
+    results = parse_batch_results(content)
     
+    return results
+
+def parse_batch_results(content: str) -> dict:
+
     # Parse JSONL file
     results = {}
     for line in content.strip().split('\n'):
@@ -343,7 +387,7 @@ def download_batch_results(output_file_id: str) -> Dict[str, Any]:
                         results[batch_id] = content_json
                     except json.JSONDecodeError:
                         logger.error(f"Could not decode JSON response for {batch_id}")
-    
+
     return results
 
 def resume_batch_processing(batch_id: str, output_file: str = None, no_wait: bool = False, polling_interval: int = 60) -> pd.DataFrame:
@@ -408,6 +452,26 @@ def resume_batch_processing(batch_id: str, output_file: str = None, no_wait: boo
     logger.info("Batch processing resumed successfully")
     return results_df
 
+def extract_org_pairs(df: pd.DataFrame,
+                    org1_column: str,
+                    org2_column: str) -> pd.DataFrame:
+    # Extract org pairs from dataframe
+    org_pairs = []
+    pair_indices = []
+    
+    for idx, row in df.iterrows():
+        org1 = str(row[org1_column])
+        org2 = str(row[org2_column])
+        
+        # Skip if either name is missing
+        if pd.isna(org1) or pd.isna(org2):
+            continue
+            
+        org_pairs.append((org1, org2))
+        pair_indices.append(idx)
+
+    return org_pairs, pair_indices
+
 def process_dataframe_for_entity_resolution(df: pd.DataFrame, 
                                           org1_column: str, 
                                           org2_column: str, 
@@ -447,21 +511,8 @@ def process_dataframe_for_entity_resolution(df: pd.DataFrame,
             polling_interval=polling_interval
         )
     
-    # Extract org pairs from dataframe
-    org_pairs = []
-    pair_indices = []
-    
-    for idx, row in df.iterrows():
-        org1 = str(row[org1_column])
-        org2 = str(row[org2_column])
-        
-        # Skip if either name is missing
-        if pd.isna(org1) or pd.isna(org2):
-            continue
-            
-        org_pairs.append((org1, org2))
-        pair_indices.append(idx)
-    
+    org_pairs, pair_indices = extract_org_pairs(df, org1_column, org2_column)
+
     # Limit number of pairs if max_pairs is specified
     if max_pairs and max_pairs < len(org_pairs):
         logger.info(f"Limiting to {max_pairs} pairs for testing")
@@ -574,6 +625,59 @@ def process_dataframe_for_entity_resolution(df: pd.DataFrame,
     logger.info("Entity resolution completed successfully")
     return results_df
 
+def link_batch_results_local(df: pd.DataFrame, 
+                            org1_column: str, 
+                            org2_column: str, 
+                            resultsfile: str) -> pd.DataFrame:
+    """
+    Link batch results in a local file to the dataframe used to submit the batch request.
+
+    The dataframe must *exactly* match the dataframe used in creating the corresponding batch 
+    request!!
+
+    Args:
+        df: Input DataFrame
+        org1_column: column name containing first organizations
+        org2_column: column name containing second organizations
+        resultsfile: path to the batch results stored locally
+    
+    Returns:
+        DataFrame with pairs and corresponding match probabilities.
+    """
+    
+    if not os.path.exists(resultsfile):
+        raise ValueError(f"{resultsfile} is not a valid file path.")
+
+    with open(resultsfile, 'r') as rf:
+        results = parse_batch_results(rf.read())
+
+    # Infer batch size based on number of matches in the first result
+    batch_size = len(list(list(results.values())[0].values())[0])
+
+    org_pairs, pair_indices = extract_org_pairs(df, org1_column, org2_column)
+
+    linked_pairs = []
+    for batch_idx in range(0, len(org_pairs), batch_size):
+        batch_pairs = org_pairs[batch_idx:batch_idx + batch_size]
+
+        try:
+            batch_output = results[f"batch_{batch_idx // batch_size}"]
+        except KeyError as e:
+            logger.warning(f"Failed on batch {batch_idx}")
+            continue
+
+        k = list(batch_output.keys())[0]
+        batch_output = batch_output[k]
+        for i, (l, r) in enumerate(batch_pairs):
+            output = batch_output[i]
+            assert output['pair'] == i+1
+            output.update({'left_norm': l, 'right_norm': r})
+            linked_pairs.append(output)
+
+    df = pd.DataFrame(linked_pairs)
+
+    return df
+
 def main():
     parser = argparse.ArgumentParser(description="Entity resolution for interest groups using OpenAI Batch API")
     parser.add_argument("--input", help="Input CSV file")
@@ -635,6 +739,25 @@ def main():
                 logger.info(f"    {row['org1']} = {row['org2']}")
             if len(high_conf_matches) > 5:
                 logger.info(f"    ... and {len(high_conf_matches) - 5} more")
+
+def main_local():
+    parser = argparse.ArgumentParser(description="Entity resolution for interest groups using OpenAI Batch API")
+    parser.add_argument("--df", help="Input CSV file")
+    parser.add_argument("--b", help="Path to batch output")
+    parser.add_argument("--col1", default="left_norm", help="Column name for first organization")
+    parser.add_argument("--col2", default="right_norm", help="Column name for second organization")
+    parser.add_argument("--output", help="Output CSV file path")
+    args = parser.parse_args()
+
+    # Read input CSV if not resuming
+    df = pd.DataFrame()
+    if args.df:
+        df = pd.read_csv(args.df)
+        logger.info(f"Read {len(df)} rows from {args.df}")
+    
+    linked_df = link_batch_results_local(df, args.col1, args.col2, args.b)
+
+    linked_df.to_csv(args.output, index=False)
 
 if __name__ == "__main__":
     main()
