@@ -760,4 +760,4 @@ def main_local():
     linked_df.to_csv(args.output, index=False)
 
 if __name__ == "__main__":
-    main()
+    main_local()

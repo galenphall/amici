@@ -414,7 +414,19 @@ class DbDeduplicator():
 
         # Add regular equivalence scores
         features_df = self.deg_corr_reg_equiv(features_df)
-        
+
+        # Add openai links
+        if os.path.exists('openai/linked.csv'):
+            openai_df = pd.read_csv('openai/linked.csv')
+            openai_df['are_same_entity'] = openai_df['are_same_entity'].astype(bool)
+            # headers = pair,are_same_entity,confidence,left_norm,right_norm
+            openai_df['pred'] = openai_df.apply(lambda x: x['confidence'] if x['are_same_entity'] else 1 - x['confidence'], axis=1)
+            openai_preds = openai_df.set_index(['left_norm', 'right_norm'])['pred'].to_dict()
+            features_df['openai_pred'] = features_df.apply(
+                lambda row: openai_preds.get((row['left_norm'], row['right_norm']), 0.0) if row['left_norm'] != row['right_norm'] else 1.0,
+                axis=1
+            )   
+
         # Store the features DataFrame
         self.features_df = features_df
         
