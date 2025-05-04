@@ -40,7 +40,7 @@ def normalize_interest_group_name(name: str) -> str:
     """
     # Remove common prefixes and suffixes
     name = re.sub(r'^(?:the|a|an)\s+', '', name, flags=re.IGNORECASE)
-    name = re.sub(r'\s+(?:inc|llc|corp|ltd|plc|gmbh|ag|sa)\.?(?:\b|$)', '', name, flags=re.IGNORECASE)
+    name = re.sub(r'\s+(?:inc|llc|corp|ltd|plc|gmbh|ag|sa)(?:\.|\b)', '', name, flags=re.IGNORECASE)
 
     # Remove acronyms in parentheses appearing at the end of the name
     name = re.sub(r'\s*\([A-Z]{2,}\)\s*$', '', name)
