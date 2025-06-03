@@ -17,6 +17,16 @@ CREATE TABLE IF NOT EXISTS comparison_results (
     FOREIGN KEY (document_id) REFERENCES documents(document_id)
 );
 
+-- Table to store hand check results
+CREATE TABLE IF NOT EXISTS selfcheck_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id INTEGER,
+    n_correct INTEGER,
+    n_incorrect INTEGER,
+    marked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (document_id) REFERENCES documents(document_id)
+);
+
 -- Index for faster queries
 CREATE INDEX IF NOT EXISTS idx_comparison_results_document 
 ON comparison_results(document_id);

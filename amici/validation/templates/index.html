@@ -3,64 +3,55 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Amici Validation Tool</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <title>Amicus Brief Validation</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-    <div id="app">
-        <header>
-            <h1>Amici Extraction Validation</h1>
-            <div class="controls">
-                <button id="prevDoc" onclick="navigateDocument(-1)">← Previous</button>
-                <select id="documentSelect" onchange="loadDocument(this.value)">
-                    <option value="">Select a document...</option>
-                </select>
-                <button id="nextDoc" onclick="navigateDocument(1)">Next →</button>
-                <button id="exportResults" onclick="exportResults()">Export Results</button>
+    <div class="container">
+        <!-- Left Panel: Document List & Metadata -->
+        <div class="panel left-panel">
+            <h2>Documents</h2>
+            <div class="document-list" id="documentList"></div>
+            <div class="metadata" id="metadata"></div>
+        </div>
+        
+        <!-- Center Panel: PDF Viewer -->
+        <div class="panel center-panel">
+            <div id="pdfViewer">
+                <p class="placeholder">Select a document to view</p>
             </div>
-        </header>
-
-        <div id="documentInfo" class="document-info"></div>
-
-        <main class="comparison-container">
-            <section class="panel left-panel">
-                <h2>Their Entities</h2>
-                <div class="entity-list" id="theirEntities"></div>
-                <button class="mark-button" onclick="markSelected('their')">
-                    Mark Selected as Missed by Me
-                </button>
-            </section>
-
-            <section class="panel center-panel">
-                <h2>PDF Document</h2>
-                <div id="pdfViewer">
-                    <canvas id="pdfCanvas"></canvas>
+        </div>
+        
+        <!-- Right Panel: Extracted Entities -->
+        <div class="panel right-panel">
+            <h2>Extracted Entities</h2>
+            <div class="stats" id="stats"></div>
+            
+            <div class="tabs">
+                <button class="tab active" onclick="switchTab('amici')">Amici</button>
+                <button class="tab" onclick="switchTab('missed')">Missed</button>
+                <button class="tab" onclick="switchTab('lawyers')">Lawyers</button>
+            </div>
+            
+            <div id="amiciTab" class="tab-content active">
+                <div class="entity-list" id="amiciList"></div>
+            </div>
+            
+            <div id="missedTab" class="tab-content">
+                <div class="add-missed">
+                    <input type="text" id="missedName" placeholder="Amicus name">
+                    <input type="text" id="missedCategory" placeholder="Category (optional)">
+                    <button onclick="addMissedAmicus()">Add</button>
                 </div>
-                <div class="pdf-controls">
-                    <button onclick="changePage(-1)">← Previous Page</button>
-                    <span id="pageInfo">Page 1 of 1</span>
-                    <button onclick="changePage(1)">Next Page →</button>
-                </div>
-            </section>
-
-            <section class="panel right-panel">
-                <h2>My Entities</h2>
-                <div class="entity-list" id="myEntities"></div>
-                <button class="mark-button" onclick="markSelected('my')">
-                    Mark Selected as Missed by Them
-                </button>
-            </section>
-        </main>
-
-        <footer>
-            <button id="cycleMatch" onclick="cycleMatch()" class="cycle-button">
-                Wrong Match? Try Next Match
-            </button>
-            <div id="matchInfo"></div>
-        </footer>
+                <div class="entity-list" id="missedList"></div>
+            </div>
+            
+            <div id="lawyersTab" class="tab-content">
+                <div class="entity-list" id="lawyersList"></div>
+            </div>
+        </div>
     </div>
-
-    <script src="{{ url_for('static', filename='script.js') }}"></script>
+    
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

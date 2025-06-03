@@ -6,256 +6,275 @@
 
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background-color: #f5f5f5;
-    color: #333;
+    background: #f5f5f5;
 }
 
-#app {
+.container {
+    display: flex;
     height: 100vh;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden; /* Prevent body scroll */
-}
-
-header {
-    background-color: #2c3e50;
-    color: white;
-    padding: 1rem;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-}
-
-header h1 {
-    font-size: 1.5rem;
-    margin-bottom: 0.5rem;
-}
-
-.controls {
-    display: flex;
-    gap: 1rem;
-    align-items: center;
-}
-
-.controls button {
-    padding: 0.5rem 1rem;
-    background-color: #3498db;
-    color: white;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    transition: background-color 0.2s;
-}
-
-.controls button:hover {
-    background-color: #2980b9;
-}
-
-#documentSelect {
-    padding: 0.5rem;
-    border-radius: 4px;
-    border: 1px solid #ddd;
-    background-color: white;
-    min-width: 300px;
-}
-
-.document-info {
-    background-color: #ecf0f1;
-    padding: 0.5rem 1rem;
-    border-bottom: 1px solid #bdc3c7;
-    font-size: 0.9rem;
-}
-
-.comparison-container {
-    flex: 1;
-    display: grid;
-    grid-template-columns: 1fr 2fr 1fr;
-    gap: 1rem;
-    padding: 1rem;
-    overflow: hidden;
-    height: calc(100vh - 200px); /* Adjust based on header/footer height */
 }
 
 .panel {
-    background-color: white;
-    border-radius: 8px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    padding: 1rem;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden; /* Important: hide overflow on panel itself */
-    max-height: 100%; /* Ensure panel doesn't exceed container */
+    padding: 20px;
+    background: white;
+    overflow-y: auto;
 }
 
-.panel h2 {
-    font-size: 1.2rem;
-    margin-bottom: 1rem;
-    color: #2c3e50;
-}
-
-.entity-list {
-    flex: 1;
-    overflow-y: auto; /* Enable vertical scrolling */
-    overflow-x: hidden; /* Hide horizontal scroll */
-    border: 1px solid #e0e0e0;
-    border-radius: 4px;
-    padding: 0.5rem;
-    min-height: 0; /* Important for Firefox */
-}
-
-.entity-item {
-    display: flex;
-    align-items: center;
-    padding: 0.5rem;
-    border-bottom: 1px solid #f0f0f0;
-    transition: background-color 0.2s;
-    flex-shrink: 0; /* Prevent items from shrinking */
-    word-break: break-word; /* Handle long entity names */
-}
-
-.entity-item:hover {
-    background-color: #f8f9fa;
-}
-
-.entity-item.marked {
-    background-color: #ffe5e5;
-    text-decoration: line-through;
-    opacity: 0.7;
-}
-
-.entity-item.missed-by-me {
-    background-color: #ffe5e5;
-}
-
-.entity-item.missed-by-them {
-    background-color: #e5f3ff;
-}
-
-.entity-checkbox {
-    margin-right: 0.5rem;
-}
-
-.mark-button {
-    margin-top: 1rem;
-    padding: 0.5rem 1rem;
-    background-color: #e74c3c;
-    color: white;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    transition: background-color 0.2s;
-}
-
-.mark-button:hover {
-    background-color: #c0392b;
+.left-panel {
+    width: 25%;
+    border-right: 1px solid #e0e0e0;
 }
 
 .center-panel {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    padding: 1rem;
-    overflow: hidden; /* Hide overflow on panel */
+    width: 50%;
+    padding: 0;
+    background: #333;
 }
 
+.right-panel {
+    width: 25%;
+    border-left: 1px solid #e0e0e0;
+}
+
+h2 {
+    margin-bottom: 20px;
+    font-size: 1.2rem;
+    color: #333;
+}
+
+/* Document List */
+.document-list {
+    margin-bottom: 30px;
+}
+
+.document-item {
+    padding: 10px;
+    border-bottom: 1px solid #eee;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.document-item:hover {
+    background: #f8f8f8;
+}
+
+.document-item.active {
+    background: #e3f2fd;
+}
+
+.document-title {
+    font-weight: 500;
+    margin-bottom: 5px;
+}
+
+.document-info {
+    font-size: 0.85rem;
+    color: #666;
+}
+
+/* Metadata */
+.metadata {
+    padding: 15px;
+    background: #f8f8f8;
+    border-radius: 5px;
+}
+
+.metadata h3 {
+    margin-bottom: 10px;
+    font-size: 1rem;
+}
+
+.metadata p {
+    margin-bottom: 5px;
+    font-size: 0.9rem;
+}
+
+/* PDF Viewer */
 #pdfViewer {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+#pdfViewer iframe {
     width: 100%;
+    height: 100%;
+    border: none;
+}
+
+.placeholder {
+    color: #999;
+}
+
+/* Stats */
+.stats {
+    padding: 15px;
+    background: #f0f7ff;
+    border-radius: 5px;
+    margin-bottom: 20px;
+}
+
+.stat-row {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 5px;
+}
+
+.stat-label {
+    font-weight: 500;
+}
+
+.stat-value {
+    color: #1976d2;
+}
+
+/* Tabs */
+.tabs {
+    display: flex;
+    margin-bottom: 20px;
+    border-bottom: 2px solid #e0e0e0;
+}
+
+.tab {
+    padding: 10px 20px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: all 0.2s;
+}
+
+.tab:hover {
+    background: #f5f5f5;
+}
+
+.tab.active {
+    color: #1976d2;
+    border-bottom: 2px solid #1976d2;
+    margin-bottom: -2px;
+}
+
+.tab-content {
+    display: none;
+}
+
+.tab-content.active {
+    display: block;
+}
+
+/* Entity List */
+.entity-item {
+    padding: 15px;
+    border: 1px solid #e0e0e0;
+    border-radius: 5px;
+    margin-bottom: 10px;
+}
+
+.entity-name {
+    font-weight: 500;
+    margin-bottom: 5px;
+}
+
+.entity-category {
+    font-size: 0.85rem;
+    color: #666;
+    margin-bottom: 10px;
+}
+
+.validation-buttons {
+    display: flex;
+    gap: 10px;
+}
+
+.btn {
+    padding: 5px 15px;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    transition: all 0.2s;
+}
+
+.btn-correct {
+    background: #4caf50;
+    color: white;
+}
+
+.btn-correct:hover {
+    background: #45a049;
+}
+
+.btn-incorrect {
+    background: #f44336;
+    color: white;
+}
+
+.btn-incorrect:hover {
+    background: #da190b;
+}
+
+.validated {
+    opacity: 0.6;
+}
+
+.validation-status {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 0.8rem;
+    margin-left: 10px;
+}
+
+.status-correct {
+    background: #e8f5e9;
+    color: #2e7d32;
+}
+
+.status-incorrect {
+    background: #ffebee;
+    color: #c62828;
+}
+
+/* Add Missed */
+.add-missed {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 20px;
+}
+
+.add-missed input {
     flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    overflow-y: auto; /* Enable scrolling for PDF */
-    overflow-x: auto; /* Allow horizontal scroll if PDF is wider */
-    padding: 1rem;
-    min-height: 0; /* Important for Firefox */
-}
-
-#pdfCanvas {
+    padding: 8px;
     border: 1px solid #ddd;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    max-width: 100%;
-    height: auto;
+    border-radius: 3px;
 }
 
-.pdf-controls {
-    margin-top: 1rem;
-    display: flex;
-    gap: 1rem;
-    align-items: center;
-    position: sticky; /* Keep controls visible */
-    bottom: 0;
-    background-color: white;
-    padding: 0.5rem;
-    border-radius: 4px;
-    box-shadow: 0 -2px 4px rgba(0,0,0,0.1);
-}
-
-footer {
-    background-color: #ecf0f1;
-    padding: 1rem;
-    text-align: center;
-    border-top: 1px solid #bdc3c7;
-    flex-shrink: 0; /* Prevent footer from shrinking */
-}
-
-.cycle-button {
-    padding: 0.8rem 1.5rem;
-    background-color: #f39c12;
+.add-missed button {
+    padding: 8px 20px;
+    background: #1976d2;
     color: white;
     border: none;
-    border-radius: 4px;
+    border-radius: 3px;
     cursor: pointer;
-    font-size: 1rem;
-    transition: background-color 0.2s;
 }
 
-.cycle-button:hover {
-    background-color: #e67e22;
+.add-missed button:hover {
+    background: #1565c0;
 }
 
-#matchInfo {
-    margin-top: 0.5rem;
-    font-size: 0.9rem;
-    color: #7f8c8d;
+/* Lawyer Item */
+.lawyer-item {
+    padding: 10px;
+    border-bottom: 1px solid #eee;
 }
 
-.loading {
-    text-align: center;
-    padding: 2rem;
-    color: #7f8c8d;
+.lawyer-name {
+    font-weight: 500;
 }
 
-.error {
-    color: #e74c3c;
-    padding: 1rem;
-    text-align: center;
-}
-
-/* Add custom scrollbar styling for better appearance */
-.entity-list::-webkit-scrollbar,
-#pdfViewer::-webkit-scrollbar {
-    width: 8px;
-}
-
-.entity-list::-webkit-scrollbar-track,
-#pdfViewer::-webkit-scrollbar-track {
-    background: #f1f1f1;
-    border-radius: 4px;
-}
-
-.entity-list::-webkit-scrollbar-thumb,
-#pdfViewer::-webkit-scrollbar-thumb {
-    background: #888;
-    border-radius: 4px;
-}
-
-.entity-list::-webkit-scrollbar-thumb:hover,
-#pdfViewer::-webkit-scrollbar-thumb:hover {
-    background: #555;
-}
-
-/* Update main to prevent overflow */
-main {
-    flex: 1;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
+.lawyer-info {
+    font-size: 0.85rem;
+    color: #666;
+    margin-top: 5px;
 }
