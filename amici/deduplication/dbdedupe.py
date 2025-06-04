@@ -760,7 +760,7 @@ class DbDeduplicator():
             raise ValueError(f"Unsupported format: {format_}. Only 'csv' is supported right now.")
     
     @classmethod
-    def load_features(cls, input_path, format_='csv'):
+    def load_features(cls, input_path):
         """
         Load features and metadata from disk and instantiate a DbDeduplicator.
         
@@ -774,82 +774,38 @@ class DbDeduplicator():
         import json
 
         # remove ending from input_path
-        input_path = input_path.rstrip('.zarr').rstrip('.csv')
+        input_path = re.sub(r"\.csv$", "", input_path)
         
-        if format_.lower() == 'zarr':
-            import zarr
-            
-            # Open Zarr store directly
-            root = zarr.open(input_path, mode='r')
-            
-            # Load metadata
-            metadata = json.loads(root.attrs['metadata'])
-            
-            # Create deduplicator with loaded parameters
-            deduplicator = cls(
-                db_path=metadata['db_path'],
-                char_ngram_range=tuple(metadata['blocking_params']['char_ngram_range']),
-                char_max_features=metadata['blocking_params']['char_max_features'],
-                word_max_features=metadata['blocking_params']['word_max_features'],
-                char_similarity_threshold=metadata['blocking_params']['char_similarity_threshold'],
-                word_similarity_threshold=metadata['blocking_params']['word_similarity_threshold'],
-                top_n_matches=metadata['blocking_params']['top_n_matches'],
-                sentence_transformer_model=metadata['prediction_params']['sentence_transformer_model'],
-                hbsbm_samples=metadata['prediction_params']['hbsbm_samples'],
-                hbsbm_wait=metadata['prediction_params']['hbsbm_wait'],
-                hbsbm_niter=metadata['prediction_params']['hbsbm_niter'],
-                output_dir=os.path.dirname(input_path)
-            )
-            
-            # Load features
-            features_group = root['features']
-            features_dict = {}
-            for col in features_group:
-                features_dict[col] = features_group[col][:]
-            
-            features_df = pd.DataFrame(features_dict)
-            sorted_left_right = features_df[['left_norm', 'right_norm']].apply(sorted, axis=1).copy()
-            features_df = features_df[features_df.left_norm != features_df.right_norm]
-            features_df = features_df[~sorted_left_right.duplicated(keep='first')]
-            features_df = features_df.reset_index(drop=True)
-
-            deduplicator.features_df = features_df
-            
-            logger.info(f"Loaded features and metadata from Zarr store at {input_path}")
-            
-        elif format_.lower() == 'csv':
-            # Load metadata from JSON
-            with open(f"{input_path}_metadata.json", 'r') as f:
-                metadata = json.load(f)
-            
-            # Create deduplicator with loaded parameters
-            deduplicator = cls(
-                db_path=metadata['db_path'],
-                char_ngram_range=tuple(metadata['blocking_params']['char_ngram_range']),
-                char_max_features=metadata['blocking_params']['char_max_features'],
-                word_max_features=metadata['blocking_params']['word_max_features'],
-                char_similarity_threshold=metadata['blocking_params']['char_similarity_threshold'],
-                word_similarity_threshold=metadata['blocking_params']['word_similarity_threshold'],
-                top_n_matches=metadata['blocking_params']['top_n_matches'],
-                sentence_transformer_model=metadata['prediction_params']['sentence_transformer_model'],
-                hbsbm_samples=metadata['prediction_params']['hbsbm_samples'],
-                hbsbm_wait=metadata['prediction_params']['hbsbm_wait'],
-                hbsbm_niter=metadata['prediction_params']['hbsbm_niter'],
-                output_dir=os.path.dirname(input_path)
-            )
-            
-            # Load features
-            features_df = pd.read_csv(f"{input_path}.csv")
-            sorted_left_right = features_df[['left_norm', 'right_norm']].apply(sorted, axis=1).copy()
-            features_df = features_df[features_df.left_norm != features_df.right_norm]
-            features_df = features_df[~sorted_left_right.duplicated(keep='first')]
-            features_df = features_df.reset_index(drop=True)
-            deduplicator.features_df = features_df
-            
-            logger.info(f"Loaded features from {input_path}.csv and metadata from {input_path}_metadata.json")
+        # Load metadata from JSON
+        with open(f"{input_path}_metadata.json", 'r') as f:
+            metadata = json.load(f)
         
-        else:
-            raise ValueError(f"Unsupported format: {format_}. Use 'zarr' or 'csv'.")
+        # Create deduplicator with loaded parameters
+        deduplicator = cls(
+            db_path=metadata['db_path'],
+            char_ngram_range=tuple(metadata['blocking_params']['char_ngram_range']),
+            char_max_features=metadata['blocking_params']['char_max_features'],
+            word_max_features=metadata['blocking_params']['word_max_features'],
+            char_similarity_threshold=metadata['blocking_params']['char_similarity_threshold'],
+            word_similarity_threshold=metadata['blocking_params']['word_similarity_threshold'],
+            top_n_matches=metadata['blocking_params']['top_n_matches'],
+            sentence_crossencoder_model=metadata['prediction_params']['sentence_crossencoder_model'],
+            hbsbm_samples=metadata['prediction_params']['hbsbm_samples'],
+            hbsbm_wait=metadata['prediction_params']['hbsbm_wait'],
+            hbsbm_niter=metadata['prediction_params']['hbsbm_niter'],
+            output_dir=os.path.dirname(input_path)
+        )
+        
+        # Load features
+        features_df = pd.read_csv(f"{input_path}.csv")
+        sorted_left_right = features_df[['left_norm', 'right_norm']].apply(sorted, axis=1).copy()
+        features_df = features_df[features_df.left_norm != features_df.right_norm]
+        features_df = features_df[~sorted_left_right.duplicated(keep='first')]
+        features_df = features_df.reset_index(drop=True)
+        deduplicator.features_df = features_df
+        
+        logger.info(f"Loaded features from {input_path}.csv and metadata from {input_path}_metadata.json")
+        
         
         return deduplicator, features_df
         
@@ -938,22 +894,12 @@ class DbDeduplicator():
                 
         # Load features if available
         if os.path.exists(self.features_path):
-            try:
-                _, self.features_df = self.load_features(self.features_path)
-                logger.info(f"Loaded features from {self.features_path}")
-                state_loaded = True
-            except Exception as e:
-                logger.error(f"Failed to load features: {e}")
-                
-                # Try CSV backup if zarr failed
-                csv_backup = f"{os.path.splitext(self.features_path)[0]}.csv"
-                if os.path.exists(csv_backup):
-                    try:
-                        _, self.features_df = self.load_features(csv_backup, format='csv')
-                        logger.info(f"Loaded features from backup {csv_backup}")
-                        state_loaded = True
-                    except Exception as e2:
-                        logger.error(f"Failed to load features backup: {e2}")
+            _, self.features_df = self.load_features(self.features_path)
+            logger.info(f"Loaded features from {self.features_path}")
+            state_loaded = True
+
+        else:
+            logger.error(f"Features path does not exist: {self.features_path}")
                 
         return state_loaded
 

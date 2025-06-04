@@ -15,3 +15,8 @@ amic/data/extracted_entities_linked/*
 *.pdf
 *.json
 **/.hypothesis/*
+**batch**output.jsonl
+**hitl_state**.pkl
+**~$**.xlsx
+**.DS_Store
+**DS_Store
