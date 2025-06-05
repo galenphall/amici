@@ -284,12 +284,12 @@ class AmicusScraper:
                 if self.current_page % self.save_interval == 0:
                     self.save_progress()
                 
-                # Check if user wants to pause
-                if self.current_page % 20 == 0:
-                    continue_scraping = input(f"\nContinue scraping? Currently on page {self.current_page}. (y/n): ")
-                    if continue_scraping.lower() != 'y':
-                        logger.info("User requested to stop scraping")
-                        break
+                # # Check if user wants to pause
+                # if self.current_page % 20 == 0:
+                #     continue_scraping = input(f"\nContinue scraping? Currently on page {self.current_page}. (y/n): ")
+                #     if continue_scraping.lower() != 'y':
+                #         logger.info("User requested to stop scraping")
+                #         break
             
             # Final save
             self.save_progress()
