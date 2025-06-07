@@ -103,6 +103,33 @@ class AmicusNameUpdater:
                 cursor.execute("UPDATE amici SET merged_name = name WHERE merged_name IS NULL")
                 conn.commit()
 
+            # Normalize *all* merged names
+            cursor.execute("SELECT DISTINCT merged_name FROM amici WHERE merged_name IS NOT NULL")
+            all_merged_names = cursor.fetchall()
+
+            for (merged_name,) in all_merged_names:
+                normalized_merged = normalize_interest_group_name(merged_name)
+                if normalized_merged != merged_name:
+                    cursor.execute(
+                        "UPDATE amici SET merged_name = ? WHERE merged_name = ?",
+                        (normalized_merged, merged_name)
+                    )
+
+            # Also normalize all merged names in amici_embeddings
+            cursor.execute("SELECT DISTINCT merged_name FROM amici_embeddings WHERE merged_name IS NOT NULL")
+            all_embedding_merged_names = cursor.fetchall()
+
+            for (merged_name,) in all_embedding_merged_names:
+                normalized_merged = normalize_interest_group_name(merged_name)
+                if normalized_merged != merged_name:
+                    cursor.execute(
+                        "UPDATE amici_embeddings SET merged_name = ? WHERE merged_name = ?",
+                        (normalized_merged, merged_name)
+                    )
+
+            conn.commit()
+            logger.info("Normalized all existing merged_name values")
+
             # Update amici table
             for amicus_id, old_name, new_name in amici_to_update:
                 cursor.execute(
