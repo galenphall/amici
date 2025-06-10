@@ -20,3 +20,7 @@ amic/data/extracted_entities_linked/*
 **~$**.xlsx
 **.DS_Store
 **DS_Store
+**amicus_name_updates**
+**.db.backup**
+**batch**.jsonl
+amici/deduplication/data/*
