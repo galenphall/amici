@@ -554,7 +554,7 @@ if __name__ == "__main__":
 
         for result in results:
             # Check if the result was successful
-            if 'error' not in result:
+            if ('error' not in result) or (str(result['error']) == 'None'):
                 try:
                     # Parse the content which should be JSON from the tool call
                     content = result['response']['body']['choices'][0]['message']['content']
@@ -570,8 +570,10 @@ if __name__ == "__main__":
                                 })
                 except (json.JSONDecodeError, KeyError, IndexError) as e:
                     print(f"Error parsing result for {result.get('custom_id', 'unknown')}: {e}")
+                    print(result)
             else:
                 print(f"Error in batch result {result.get('custom_id', 'unknown')}: {result['error']}")
+
 
         results_df = pd.DataFrame(results_map)
         output_csv = f"openai_classifications.csv"
