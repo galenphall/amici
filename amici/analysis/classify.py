@@ -82,12 +82,12 @@ def make_schema(interest_groups, allowed_categories):
     
     return schema
 
-def prepare_batch_data(test_items, model_id, allowed_categories, output_file="batch_input.jsonl", use_claude=False):
+def prepare_batch_data(interest_group_batches, model_id, allowed_categories, output_file="batch_input.jsonl", use_claude=False):
     """
     Prepare evaluation data for batch processing with the specified schema.
     
     Args:
-        test_items: List of (prompt, interest_groups, expected) tuples
+        interest_groups: List of interest_groups batches
         model_id: ID of the fine-tuned model to use
         allowed_categories: List of allowed categories for the enum
         output_file: Path to save the batch input file
@@ -95,48 +95,13 @@ def prepare_batch_data(test_items, model_id, allowed_categories, output_file="ba
     """
     batch_requests = []
     
-    for i, (prompt, interest_groups, _) in enumerate(test_items):
+    for i, interest_groups in enumerate(interest_group_batches):
         # Format the system message to include allowed categories
-        categories_str = ", ".join(allowed_categories)
+        categories_str = "; ".join(allowed_categories)
 
-        if prompt is None:
-            prompt = "Categorize these interest groups:\n" + "\n".join(interest_groups)
+        prompt = "Categorize these interest groups:\n" + "  ".join([f'({i+1}) {g}' for i, g in enumerate(interest_groups)])
         
-        system_message = (
-            """
-            You are an expert political finance analyst specializing in categorizing lobbying entities into standardized industry classifications. Your task is to analyze each interest group name and assign it to the most appropriate industry category according to the National Institute for Money in Politics classification system.
-
-            INSTRUCTIONS:
-            1. Review each interest group name carefully
-            2. Consider the likely business activities, policy focus, or stakeholders represented
-            3. Select the SINGLE most appropriate industry category from the list below
-            4. Provide your classification in a consistent format: "Interest Group Name: [CATEGORY]"
-            5. If truly uncertain, classify as "Unknown/Other" rather than guessing
-
-            CLASSIFICATION GUIDELINES:
-            - Focus on the primary function of the organization, not secondary activities
-            - Consider parent companies or industry affiliations when relevant
-            - Be consistent with similar organizations you've classified previously
-            - Trade associations should be classified by the industry they represent, unless they are general business trade associations
-            - Follow the provided output schema
-
-            SCHEMA
-            {"predictions": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "interest_group": {"type": "string"},
-                            "industry": {"type": "string"}
-                        }
-                    }
-                }
-            }
-
-            CATEGORIES
-            """
-            f"The allowed industries are: {categories_str}. "
-        )
+        system_message = f"You are an expert at categorizing interest groups into industries. The allowed industries are: {categories_str}. "
         
         if use_claude:
             # Prepare for Claude API with tool use
@@ -386,7 +351,7 @@ def download_claude_batch_results(batch_id, save_path="claude_batch_results.json
         print(f"Error downloading Claude batch results: {e}")
         return None
 
-def submit_batch_job(client, batch_file):
+def submit_openai_batch(client, batch_file):
     """
     Submit a batch job to OpenAI and return the job ID.
     
@@ -422,7 +387,7 @@ def submit_batch_job(client, batch_file):
         print(f"Error submitting batch job: {e}")
         return None, None
 
-def monitor_batch_job(client, batch_id):
+def monitor_openai_batch(client, batch_id):
     """
     Monitor the status of a batch job until completion.
     
@@ -459,7 +424,7 @@ def monitor_batch_job(client, batch_id):
         print(f"Error monitoring batch job: {e}")
         return None
 
-def download_batch_results(client, output_file_id, save_path="batch_results.jsonl"):
+def download_openai_batch_results(client, output_file_id, save_path="batch_results.jsonl"):
     """
     Download the results of a completed batch job from OpenAI.
     
@@ -515,8 +480,7 @@ def main_run(input_file="../data/unique_amicus_merged_names.csv", name_col="merg
     
     # Prepare batch data
     batched_names = [names[i:i + batch_size] for i in range(0, len(names), batch_size)]
-    test_items = [(None, names, None) for names in batched_names]
-    print(f"Prepared {len(test_items)} test items for batch processing")
+    print(f"Prepared {len(batched_names)} items for batch processing")
 
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
     
@@ -553,20 +517,25 @@ def main_run(input_file="../data/unique_amicus_merged_names.csv", name_col="merg
     else:
         print("Using OpenAI API...")
         batch_data = prepare_batch_data(
-            test_items, 
+            batched_names, 
             model_id="ft:gpt-4.1-mini-2025-04-14:personal:igclassify-v2:BXRi9hNg",
             allowed_categories=INDUSTRIES, 
             output_file=f"batch_input_{timestamp}.jsonl"
         )
         print(f"Batch data prepared and saved to {batch_data}")
+
+        cont = input("Continue? [Y/n]: ")
+        if cont.lower() == 'y':
         
-        # Submit batch job
-        batch_id, output_file_id = submit_batch_job(openai_client, batch_data)
-        
-        if batch_id:
-            print(f"Batch job submitted successfully! Batch ID: {batch_id}")
-            print(f"Output file ID: {output_file_id}")
-            print("Use this ID to monitor or retrieve results.")
+            # Submit batch job
+            batch_id, output_file_id = submit_openai_batch(openai_client, batch_data)
+            
+            if batch_id:
+                print(f"Batch job submitted successfully! Batch ID: {batch_id}")
+                print(f"Output file ID: {output_file_id}")
+                print("Use this ID to monitor or retrieve results.")
+        else:
+            return
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Process interest groups using OpenAI or Claude API')
@@ -575,13 +544,92 @@ if __name__ == "__main__":
     parser.add_argument('--input-file', default='../data/unique_amicus_merged_names.csv', help='Input CSV file')
     parser.add_argument('--name-col', default='merged_name', help='Column name containing names')
     parser.add_argument('--batch-size', type=int, default=50, help='Batch size for processing')
+    parser.add_argument('--output-id', type=str)
     
     args = parser.parse_args()
     
-    main_run(
-        input_file=args.input_file,
-        name_col=args.name_col,
-        batch_size=args.batch_size,
-        use_claude=args.use_claude,
-        claude_model=args.claude_model
-    )
+    if 'output_id' in args and args.output_id is not None:
+        results = download_openai_batch_results(openai_client, args.output_id)
+        results_map = []
+
+        for result in results:
+            # Check if the result was successful
+            if 'error' not in result:
+                try:
+                    # Parse the content which should be JSON from the tool call
+                    content = result['response']['body']['choices'][0]['message']['content']
+                    parsed_content = json.loads(content)
+                    
+                    # Extract predictions
+                    if 'predictions' in parsed_content:
+                        for prediction in parsed_content['predictions']:
+                            if isinstance(prediction, dict):
+                                results_map.append({
+                                    'interest_group': prediction['interest_group'].lower(),
+                                    'industry': prediction['industry']
+                                })
+                except (json.JSONDecodeError, KeyError, IndexError) as e:
+                    print(f"Error parsing result for {result.get('custom_id', 'unknown')}: {e}")
+            else:
+                print(f"Error in batch result {result.get('custom_id', 'unknown')}: {result['error']}")
+
+        results_df = pd.DataFrame(results_map)
+        output_csv = f"openai_classifications.csv"
+        results_df.to_csv(output_csv, index=False)
+        print(f"Saved {len(results_df)} classifications to {output_csv}")
+    else:
+        main_run(
+            input_file=args.input_file,
+            name_col=args.name_col,
+            batch_size=args.batch_size,
+            use_claude=args.use_claude,
+            claude_model=args.claude_model
+        )
+
+    # timestamp = '2025-06-10 00:57:27.409306+00:00'
+    # batch_id = 'msgbatch_01G8jFcQkRJMJFJar75bv299'
+    # batch = completed_batch = claude_client.messages.batches.retrieve(batch_id)
+    # output_file = f"classification/claude_batch_results_{timestamp}.jsonl"
+    # results = download_claude_batch_results(batch.id, output_file)
+    
+    # if results:
+    #     print(f"\nBatch processing statistics:")
+    #     print(f"Succeeded: {completed_batch.request_counts.succeeded}")
+    #     print(f"Errored: {completed_batch.request_counts.errored}")
+    #     print(f"Canceled: {completed_batch.request_counts.canceled}")
+    #     print(f"Expired: {completed_batch.request_counts.expired}")
+
+    # results_map = []
+    # # extract interest group to industry mapping
+    # # Load the results file
+    # with open(output_file, 'r') as f:
+    #     for line in f:
+    #         result = json.loads(line)
+            
+    #         # Check if the result was successful
+    #         if 'error' not in result:
+    #             try:
+    #                 # Parse the content which should be JSON from the tool call
+    #                 content = result['response']['body']['choices'][0]['message']['content']
+    #                 parsed_content = json.loads(content)
+                    
+    #                 # Extract predictions
+    #                 if 'predictions' in parsed_content:
+    #                     for prediction in parsed_content['predictions']:
+    #                         if isinstance(prediction, dict):
+    #                             results_map.append({
+    #                                 'interest_group': prediction['interest_group'],
+    #                                 'industry': prediction['industry']
+    #                             })
+    #             except (json.JSONDecodeError, KeyError, IndexError) as e:
+    #                 print(f"Error parsing result for {result.get('custom_id', 'unknown')}: {e}")
+    #         else:
+    #             print(f"Error in batch result {result.get('custom_id', 'unknown')}: {result['error']}")
+
+    # print(f"Extracted {len(results_map)} interest group classifications")
+
+    # # Convert to DataFrame and save to CSV
+    # results_df = pd.DataFrame(results_map)
+    # output_csv = f"claude_classifications.csv"
+    # results_df.to_csv(output_csv, index=False)
+    # print(f"Saved {len(results_df)} classifications to {output_csv}")
